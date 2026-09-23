@@ -69,7 +69,9 @@ pub struct Hold {
     inhibit: Option<Child>,
 }
 
-pub fn hold(_granted: bool) -> Hold {
+/// ponytail: `keep_display` is ignored — screen blanking is the desktop's (GNOME/KDE screensaver
+/// D-Bus inhibit), not logind's; add org.freedesktop.ScreenSaver.Inhibit when someone asks.
+pub fn hold(_granted: bool, _keep_display: bool) -> Hold {
     if is_kde() && !restore_file().exists() {
         let kde_lid = KDE_GROUPS
             .iter()

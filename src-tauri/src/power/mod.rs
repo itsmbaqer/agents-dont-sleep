@@ -1,7 +1,7 @@
 //! Platform power control. Every OS module exposes the same API:
 //!
 //! - `OS`, `DEVICE`, `NEEDS_GRANT`, `has_grant`, `install_grant`, `uninstall_grant`
-//! - `hold(granted) -> Hold`, `Hold::release`, `restore` (undo anything a crash left behind)
+//! - `hold(granted, keep_display) -> Hold`, `Hold::release`, `restore` (undo anything a crash left behind)
 //! - `battery`, `low_power`, `thermal`, `lid_closed`, `user_idle_secs`
 //! - `lock_screen`, `display_sleep_now`, `sleep_now`
 //! - `sounds`, `play_sound`, `default_sound`, `init`, `disable_app_nap`

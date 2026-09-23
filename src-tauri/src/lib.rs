@@ -56,6 +56,8 @@ struct Core {
     settings: Settings,
     held_since: Option<Instant>,
     hold: Option<power::Hold>,
+    /// Whether the current hold also keeps the display on.
+    hold_display: bool,
     granted: bool,
     lid_closed: bool,
     finished_at: Option<Instant>,
@@ -127,8 +129,18 @@ fn tick(app: &AppHandle, sys: &mut System) {
         let mut note: Option<(&str, String)> = None;
         let device = power::DEVICE;
 
+        let keep_display = s.keep_display_on && s.display_off != DisplayOff::WhileAgentsRun;
+        if hold && c.held_since.is_some() && c.hold_display != keep_display {
+            // The screen setting changed mid-hold: swap the hold, keep the session going.
+            if let Some(h) = c.hold.take() {
+                h.release();
+            }
+            c.hold = Some(power::hold(c.granted, keep_display));
+            c.hold_display = keep_display;
+        }
         if hold && c.held_since.is_none() {
-            c.hold = Some(power::hold(c.granted));
+            c.hold = Some(power::hold(c.granted, keep_display));
+            c.hold_display = keep_display;
             c.held_since = Some(Instant::now());
             c.finished_at = None;
             if s.display_off == DisplayOff::WhileAgentsRun {
@@ -584,6 +596,7 @@ pub fn run() {
                     settings: s,
                     held_since: None,
                     hold: None,
+                    hold_display: false,
                     granted: power::has_grant(),
                     lid_closed: power::lid_closed(),
                     finished_at: None,

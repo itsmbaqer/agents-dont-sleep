@@ -215,7 +215,7 @@ const DISPLAY_OPTIONS: { value: DisplayOff; label: string; hint: string }[] = [
   { value: "onLidClose", label: "When the lid closes", hint: "Blanks the screen the moment you shut the lid." },
   { value: "whileAgentsRun", label: "While agents run", hint: "Turns the display off as soon as an agent starts working." },
   { value: "afterFinish", label: "After agents finish", hint: "Turns it off a while after the last agent finishes, if you're away." },
-  { value: "never", label: "Never", hint: "Leave the display to macOS." },
+  { value: "never", label: "Never", hint: "Don't turn it off; the system's own display sleep still applies when agents are idle." },
 ];
 
 export function DisplaySection() {
@@ -260,6 +260,23 @@ export function DisplaySection() {
       </Group>
 
       <Group>
+        <Row
+          title="Keep the screen on while agents work"
+          hint={
+            status?.platform.os === "linux"
+              ? "Not supported on Linux yet: your desktop's screen blanking still applies."
+              : settings.displayOff === "whileAgentsRun"
+                ? "Off while “Turn the display off while agents run” is selected."
+                : "Stops the display from dimming and sleeping. Closing the lid still turns it off."
+          }
+        >
+          <Switch
+            checked={settings.keepDisplayOn && settings.displayOff !== "whileAgentsRun"}
+            disabled={settings.displayOff === "whileAgentsRun" || status?.platform.os === "linux"}
+            onCheckedChange={(keepDisplayOn) => update({ keepDisplayOn })}
+            aria-label="Keep the screen on while agents work"
+          />
+        </Row>
         <Row title="Lock the screen when the lid closes" hint="Staying awake skips the usual lock-on-sleep, so the app locks for you.">
           <Switch checked={settings.lockOnLidClose} onCheckedChange={(lockOnLidClose) => update({ lockOnLidClose })} aria-label="Lock on lid close" />
         </Row>

@@ -36,6 +36,8 @@ pub struct Settings {
     pub display_off: DisplayOff,
     pub display_off_after_secs: u32,
     pub lock_on_lid_close: bool,
+    /// Stop the display from dimming and sleeping while agents work (lid open).
+    pub keep_display_on: bool,
     pub notify_engage: bool,
     pub notify_finish: bool,
     pub notify_battery: bool,
@@ -60,6 +62,7 @@ impl Default for Settings {
             display_off: DisplayOff::OnLidClose,
             display_off_after_secs: 30,
             lock_on_lid_close: true,
+            keep_display_on: true,
             notify_engage: false,
             notify_finish: true,
             notify_battery: true,

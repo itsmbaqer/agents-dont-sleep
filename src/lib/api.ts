@@ -13,6 +13,7 @@ export interface Settings {
   displayOff: DisplayOff;
   displayOffAfterSecs: number;
   lockOnLidClose: boolean;
+  keepDisplayOn: boolean;
   notifyEngage: boolean;
   notifyFinish: boolean;
   notifyBattery: boolean;

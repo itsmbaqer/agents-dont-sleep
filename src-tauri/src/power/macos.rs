@@ -67,18 +67,19 @@ pub fn uninstall_grant() -> Result<(), String> {
 }
 
 /// SleepDisabled when granted, plus a plain `caffeinate` assertion that covers idle sleep when
-/// the rule is missing and shows up in `pmset -g assertions`. `-w` makes it die with us.
+/// the rule is missing and shows up in `pmset -g assertions` (`-d` also keeps the screen on).
+/// `-w` makes it die with us.
 pub struct Hold {
     granted: bool,
     caffeinate: Option<Child>,
 }
 
-pub fn hold(granted: bool) -> Hold {
+pub fn hold(granted: bool, keep_display: bool) -> Hold {
     if granted {
         set_sleep_disabled(true);
     }
     let caffeinate = Command::new("/usr/bin/caffeinate")
-        .args(["-i", "-w", &std::process::id().to_string()])
+        .args([if keep_display { "-di" } else { "-i" }, "-w", &std::process::id().to_string()])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())

@@ -101,7 +101,7 @@ pub struct Hold {
     request: isize,
 }
 
-pub fn hold(_granted: bool) -> Hold {
+pub fn hold(_granted: bool, keep_display: bool) -> Hold {
     // Save the user's values once; a leftover file (crash) already holds the originals.
     if !restore_file().exists() {
         let saved = with_scheme(|scheme| {
@@ -135,6 +135,9 @@ pub fn hold(_granted: bool) -> Hold {
         unsafe {
             PowerSetRequest(h, PowerRequestSystemRequired);
             PowerSetRequest(h, PowerRequestExecutionRequired);
+            if keep_display {
+                PowerSetRequest(h, PowerRequestDisplayRequired);
+            }
         }
         h as isize
     };
@@ -148,6 +151,7 @@ impl Hold {
             unsafe {
                 PowerClearRequest(h, PowerRequestSystemRequired);
                 PowerClearRequest(h, PowerRequestExecutionRequired);
+                PowerClearRequest(h, PowerRequestDisplayRequired); // no-op if it was never set
                 CloseHandle(h);
             }
         }
