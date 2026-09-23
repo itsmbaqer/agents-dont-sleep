@@ -32,6 +32,8 @@ export interface Settings {
   alertLongTurnMins: number;
   alertErrors: boolean;
   releaseQuietAfterMins: number;
+  /** "Keep awake" end (unix secs; 0 = off; 9999999999 = until turned off). */
+  manualUntil: number;
 }
 
 export type Reason =
@@ -94,6 +96,8 @@ export interface Status {
   sessions: Session[];
   processAgents: string[];
   pausedUntil: number;
+  manualUntil: number;
+  sleepWhenDone: boolean;
   platform: Platform;
 }
 

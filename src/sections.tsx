@@ -29,6 +29,7 @@ export function GeneralSection() {
             </Button>
           </Row>
         )}
+        <KeepAwakeRow />
         <Row title="Toggle shortcut" hint={os === "linux" ? "Click, then press the new key combination. Global shortcuts don't work on Wayland." : "Click, then press the new key combination."}>
           <ShortcutInput value={settings.shortcut} os={os} onChange={(shortcut) => update({ shortcut })} />
         </Row>
@@ -378,5 +379,42 @@ function MinutesInput({ value, min, max = 600, onChange, disabled, suffix }: { v
       <Input type="number" min={min} max={max} value={text} disabled={disabled} onChange={(e) => setText(e.target.value)} onBlur={commit} onKeyDown={(e) => e.key === "Enter" && commit()} className="h-7 w-16" aria-label={suffix} />
       {suffix}
     </span>
+  );
+}
+
+/** Matches `settings::FOREVER` in Rust: "until turned off". */
+const FOREVER = 9_999_999_999;
+
+function KeepAwakeRow() {
+  const { settings, status, update } = useApp();
+  const now = Date.now() / 1000;
+  const on = settings.manualUntil > now;
+  const left = Math.max(1, Math.round((settings.manualUntil - now) / 60));
+  const hint = !on
+    ? `No agent needed. Battery${status?.platform.thermal ? ", heat" : ""} and power-saving limits still apply.`
+    : settings.manualUntil >= FOREVER
+      ? "On until you stop it."
+      : `${left >= 60 ? `${Math.floor(left / 60)}h ${String(left % 60).padStart(2, "0")}m` : `${left} min`} left.`;
+  const keep = (mins: number | null) => update({ manualUntil: mins === null ? FOREVER : Math.floor(now) + mins * 60 });
+  return (
+    <Row title="Keep awake without agents" hint={hint}>
+      {on ? (
+        <Button variant="outline" size="sm" onClick={() => update({ manualUntil: 0 })}>
+          Stop
+        </Button>
+      ) : (
+        <>
+          <Button variant="outline" size="sm" onClick={() => keep(30)}>
+            30 min
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => keep(60)}>
+            1 hour
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => keep(null)}>
+            Until I stop
+          </Button>
+        </>
+      )}
+    </Row>
   );
 }

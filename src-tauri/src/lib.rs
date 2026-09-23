@@ -46,6 +46,10 @@ pub(crate) struct Status {
     pub(crate) sessions: Vec<agents::Session>,
     pub(crate) process_agents: Vec<String>,
     pub(crate) paused_until: u64,
+    /// "Keep awake" end time (0 = off, FOREVER = until turned off).
+    pub(crate) manual_until: u64,
+    /// One-shot "Sleep when agents finish".
+    pub(crate) sleep_when_done: bool,
     pub(crate) platform: power::Platform,
 }
 
@@ -64,6 +68,8 @@ struct Core {
     /// (unix secs, percent) while on battery, for the time-to-cutoff estimate.
     battery_samples: VecDeque<(u64, u8)>,
     alerts: alerts::Memory,
+    /// "Sleep when agents finish": one-shot, deliberately not saved.
+    sleep_when_done: bool,
 }
 
 struct AppState {
@@ -113,6 +119,13 @@ fn tick(app: &AppHandle, sys: &mut System) {
     let mut sessions = sessions;
     let (status, note) = {
         let mut c = st.core();
+        let t = now();
+        let mut manual_ended = false;
+        if c.settings.manual_until > 0 && c.settings.manual_until <= t {
+            c.settings.manual_until = 0;
+            let _ = settings::save(&c.settings);
+            manual_ended = true;
+        }
         let s = c.settings.clone();
         // A dismissal lasts until the session's next event.
         c.dismissed.retain(|k, at| sessions.iter().any(|x| tray::key(x) == *k && x.last_event == *at));
@@ -125,7 +138,6 @@ fn tick(app: &AppHandle, sys: &mut System) {
         let working = counted().count() + process_agents.len();
         let needs_you = counted().filter(|x| x.state == "waiting").count();
 
-        let t = now();
         match battery {
             Some(pct) if !on_ac => {
                 if c.battery_samples.back().is_none_or(|&(at, _)| t.saturating_sub(at) >= 60) {
@@ -144,6 +156,7 @@ fn tick(app: &AppHandle, sys: &mut System) {
             enabled: s.enabled,
             paused: s.paused_until > now(),
             working,
+            manual: s.manual_until > t,
             thermal: thermal.unwrap_or(0),
             thermal_limit: s.thermal_limit,
             low_power,
@@ -155,6 +168,7 @@ fn tick(app: &AppHandle, sys: &mut System) {
         });
         let hold = reason == Reason::Holding;
         let mut note: Option<(&str, String)> = None;
+        let mut sleep_after = false;
         let device = power::DEVICE;
 
         let keep_display = s.keep_display_on && s.display_off != DisplayOff::WhileAgentsRun;
@@ -186,12 +200,25 @@ fn tick(app: &AppHandle, sys: &mut System) {
                     format!("Stopped at {}%. Your {device} can sleep now.", battery.unwrap_or(0)),
                 )),
                 Reason::Thermal => Some(("Running hot", format!("Letting your {device} sleep until it cools down."))),
+                Reason::NoAgents if manual_ended && s.notify_finish => {
+                    Some(("Keep-awake ended", format!("Your {device} can sleep now.")))
+                }
                 // A per-session "finished" alert already said it.
                 Reason::NoAgents if s.notify_finish && !announced_finish => {
                     Some(("Agents finished", format!("Your {device} can sleep now.")))
                 }
                 _ => None,
             };
+            if reason == Reason::NoAgents && c.sleep_when_done {
+                c.sleep_when_done = false;
+                // Only when nobody is at the keyboard: never sleep under someone typing.
+                if power::user_idle_secs() >= 60 {
+                    sleep_after = true;
+                    note = Some(("Agents finished", format!("Putting your {device} to sleep, as you asked.")));
+                } else {
+                    note = Some(("Agents finished", format!("Not sleeping: you're using your {device}.")));
+                }
+            }
             if lid && !external {
                 power::sleep_now();
             }
@@ -234,12 +261,14 @@ fn tick(app: &AppHandle, sys: &mut System) {
             sessions,
             process_agents,
             paused_until: s.paused_until,
+            manual_until: s.manual_until,
+            sleep_when_done: c.sleep_when_done,
             platform: power::platform(),
         };
         c.status = Some(status.clone());
-        (status, (note, session_alerts))
+        (status, (note, session_alerts, sleep_after))
     };
-    let (note, session_alerts) = note;
+    let (note, session_alerts, sleep_after) = note;
 
     let banners: Vec<(String, String)> = note
         .map(|(t, b)| (t.to_string(), b))
@@ -251,6 +280,10 @@ fn tick(app: &AppHandle, sys: &mut System) {
             let _ = app.notification().builder().title(title).body(body).show();
         }
         power::play_sound(&st.core().settings.sound);
+    }
+    if sleep_after {
+        std::thread::sleep(Duration::from_secs(2)); // let the banner and sound land first
+        power::sleep_now();
     }
     update_tray(app, &status);
     let _ = app.emit("status", &status);
@@ -317,7 +350,22 @@ fn on_menu(app: &AppHandle, id: &str) {
         "toggle" => update_settings(app, |s| s.enabled = !s.enabled),
         "pause30" => update_settings(app, |s| s.paused_until = now() + 30 * 60),
         "pause60" => update_settings(app, |s| s.paused_until = now() + 60 * 60),
-        "pauseinf" => update_settings(app, |s| s.paused_until = u64::MAX),
+        "pauseinf" => update_settings(app, |s| s.paused_until = settings::FOREVER),
+        "keep30" => update_settings(app, |s| s.manual_until = now() + 30 * 60),
+        "keep60" => update_settings(app, |s| s.manual_until = now() + 60 * 60),
+        "keep120" => update_settings(app, |s| s.manual_until = now() + 2 * 60 * 60),
+        "keepinf" => update_settings(app, |s| s.manual_until = settings::FOREVER),
+        "keepstop" => update_settings(app, |s| s.manual_until = 0),
+        "sleepdone" => {
+            let st = app.state::<AppState>();
+            let on = {
+                let mut c = st.core();
+                c.sleep_when_done = !c.sleep_when_done;
+                c.sleep_when_done
+            };
+            let _ = app.emit("sleep-when-done", on);
+            st.kick();
+        }
         "resume" => update_settings(app, |s| s.paused_until = 0),
         "grant" => {
             let app = app.clone();
@@ -513,6 +561,7 @@ pub fn run() {
                     dismissed: HashMap::new(),
                     battery_samples: VecDeque::new(),
                     alerts: alerts::Memory::default(),
+                    sleep_when_done: false,
                 }),
                 tray: Mutex::new(tray::TrayState::default()),
                 kick: Mutex::new(kick_tx),

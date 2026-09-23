@@ -3,7 +3,7 @@
 //! place with `set_text`, so an open menu stays open while agents work.
 use crate::agents::Session;
 use crate::decide::Reason;
-use crate::settings::{Settings, TrayLabel};
+use crate::settings::{Settings, TrayLabel, FOREVER};
 use crate::{power, Status};
 use std::collections::HashMap;
 use tauri::{
@@ -254,12 +254,15 @@ fn low_power_name() -> &'static str {
 
 pub fn status_line(s: &Status, set: &Settings) -> String {
     let now = crate::settings::now();
+    let manual = s.manual_until > now && s.working == 0;
     match s.reason {
+        Reason::Holding if manual && s.manual_until >= FOREVER => "Awake — kept on until you stop it".into(),
+        Reason::Holding if manual => format!("Awake — kept on · {} left", dur(s.manual_until.saturating_sub(now))),
         Reason::Holding => {
             format!("Awake — {} · {}", if s.lid_proof { "lid-proof" } else { "lid open only" }, dur(s.held_secs))
         }
         Reason::NoAgents => format!("Idle — your {} can sleep normally", power::DEVICE),
-        Reason::Paused if s.paused_until == u64::MAX => "Paused until you resume".into(),
+        Reason::Paused if s.paused_until >= FOREVER => "Paused until you resume".into(),
         Reason::Paused => format!("Paused · {} left", dur(s.paused_until.saturating_sub(now))),
         Reason::Disabled => {
             format!("Off — press {} to turn on", pretty_shortcut(&set.shortcut, cfg!(target_os = "macos")))
@@ -334,12 +337,35 @@ pub fn spec(s: &Status, set: &Settings, connected: bool) -> Vec<Node> {
         checked: set.enabled,
         accel: Some(set.shortcut.clone()),
     });
+    let now = crate::settings::now();
+    let manual = s.manual_until > now;
+    let keep_text = match s.manual_until {
+        t if t >= FOREVER => "Keep awake · until you stop it".to_string(),
+        t if t > now => format!("Keep awake · {} left", dur(t - now)),
+        _ => "Keep awake".to_string(),
+    };
+    let mut keep = vec![
+        item("keep30", "30 minutes"),
+        item("keep60", "1 hour"),
+        item("keep120", "2 hours"),
+        item("keepinf", "Until I turn it off"),
+    ];
+    if manual {
+        keep.extend([Node::Sep, item("keepstop", "Stop keeping awake")]);
+    }
+    v.push(Node::Sub { id: "keep".into(), text: keep_text, live: true, children: keep });
     let paused = s.reason == Reason::Paused;
     let mut pause = vec![item("pause30", "30 minutes"), item("pause60", "1 hour"), item("pauseinf", "Until I resume")];
     if paused {
         pause.extend([Node::Sep, item("resume", "Resume")]);
     }
     v.push(Node::Sub { id: "pause".into(), text: "Pause".into(), live: false, children: pause });
+    v.push(Node::Check {
+        id: "sleepdone".into(),
+        text: "Sleep when agents finish".into(),
+        checked: s.sleep_when_done,
+        accel: None,
+    });
     if power::NEEDS_GRANT && !s.lid_proof {
         v.push(item("grant", "Allow lid-closed awake…"));
     }
@@ -589,6 +615,8 @@ mod tests {
             sessions,
             process_agents: vec![],
             paused_until: 0,
+            manual_until: 0,
+            sleep_when_done: false,
             platform: power::platform(),
         }
     }
@@ -669,6 +697,22 @@ mod tests {
         let st = status(vec![]);
         assert!(ids(&spec(&st, &Settings::default(), false)).contains(&"connect".to_string()));
         assert!(ids(&spec(&st, &Settings::default(), true)).contains(&"none".to_string()));
+    }
+
+    #[test]
+    fn manual_keep_awake() {
+        let mut st = status(vec![]);
+        st.manual_until = crate::settings::now() + 45 * 60;
+        let set = Settings::default();
+        assert!(status_line(&st, &set).starts_with("Awake — kept on · 4")); // 44m or 45m left
+        let nodes = spec(&st, &set, true);
+        let keep = nodes.iter().find_map(|n| match n {
+            Node::Sub { id, children, .. } if id == "keep" => Some(ids(children)),
+            _ => None,
+        });
+        assert!(keep.unwrap().contains(&"keepstop".to_string()));
+        st.manual_until = FOREVER;
+        assert_eq!(status_line(&st, &set), "Awake — kept on until you stop it");
     }
 
     #[test]

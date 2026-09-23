@@ -10,6 +10,10 @@ pub fn home() -> PathBuf {
     std::env::home_dir().unwrap_or_else(std::env::temp_dir)
 }
 
+/// "Until turned off" for pause and keep-awake end times. Far future, but still exact as a
+/// JavaScript number, so the settings window can round-trip it (u64::MAX can't).
+pub const FOREVER: u64 = 9_999_999_999;
+
 pub fn now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
@@ -73,6 +77,8 @@ pub struct Settings {
     pub alert_errors: bool,
     /// Stop counting a session after this long without any event.
     pub release_quiet_after_mins: u32,
+    /// "Keep awake" from the tray: unix time it ends (0 = off, FOREVER = until turned off).
+    pub manual_until: u64,
 }
 
 impl Default for Settings {
@@ -105,6 +111,7 @@ impl Default for Settings {
             alert_long_turn_mins: 5,
             alert_errors: true,
             release_quiet_after_mins: 120,
+            manual_until: 0,
         }
     }
 }
