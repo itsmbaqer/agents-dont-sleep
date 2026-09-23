@@ -112,7 +112,7 @@ pub fn dur(secs: u64) -> String {
     }
 }
 
-fn error_label(kind: &str) -> String {
+pub fn error_label(kind: &str) -> String {
     match kind {
         "rate_limit" => "rate limited".into(),
         "overloaded" => "API overloaded".into(),

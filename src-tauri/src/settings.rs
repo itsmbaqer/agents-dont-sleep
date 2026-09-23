@@ -64,6 +64,15 @@ pub struct Settings {
     pub tray_label: TrayLabel,
     /// A working session with no events for this long is flagged (0 = never).
     pub alert_stuck_mins: u32,
+    /// Notify when a session has waited on you this long (0 = right away).
+    pub alert_waiting: bool,
+    pub alert_waiting_mins: u32,
+    /// Notify when a turn at least this long finishes (0 = never).
+    pub alert_long_turn_mins: u32,
+    /// Notify when a turn stops with an error (rate limit, overloaded, …).
+    pub alert_errors: bool,
+    /// Stop counting a session after this long without any event.
+    pub release_quiet_after_mins: u32,
 }
 
 impl Default for Settings {
@@ -91,6 +100,11 @@ impl Default for Settings {
             hooks_version: 0,
             tray_label: TrayLabel::Full,
             alert_stuck_mins: 15,
+            alert_waiting: true,
+            alert_waiting_mins: 1,
+            alert_long_turn_mins: 5,
+            alert_errors: true,
+            release_quiet_after_mins: 120,
         }
     }
 }

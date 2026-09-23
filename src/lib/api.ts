@@ -26,6 +26,12 @@ export interface Settings {
   trayLabel: "full" | "count" | "off";
   /** Flag a working session with no events for this long (0 = never). */
   alertStuckMins: number;
+  alertWaiting: boolean;
+  alertWaitingMins: number;
+  /** Notify when a turn at least this long finishes (0 = never). */
+  alertLongTurnMins: number;
+  alertErrors: boolean;
+  releaseQuietAfterMins: number;
 }
 
 export type Reason =

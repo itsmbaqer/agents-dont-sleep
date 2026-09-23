@@ -206,6 +206,12 @@ export function PowerSection() {
         </Row>
       </Group>
 
+      <Group title="Sessions">
+        <Row title="Stop counting a session after it's quiet for" hint="A crashed agent, or a tool running silently longer than you allow, stops holding.">
+          <MinutesInput value={settings.releaseQuietAfterMins} min={10} max={1440} onChange={(releaseQuietAfterMins) => update({ releaseQuietAfterMins })} suffix="min" />
+        </Row>
+      </Group>
+
       {status?.platform.thermal !== false && <Group title="Heat" footer="Always on. A closed MacBook in a bag can't shed heat, so the app steps back when macOS reports thermal pressure and re-engages once it cools.">
         <Row title="Stop at thermal level">
           <Select value={String(settings.thermalLimit)} onValueChange={(v) => update({ thermalLimit: Number(v) })}>
@@ -305,6 +311,24 @@ export function NotificationsSection() {
   useEffect(() => void api.sounds().then(setSounds), []);
   return (
     <>
+      <Group title="Watch my agents" footer="These are per session. Only activity metadata is used, never your prompts or code.">
+        <Row title="When an agent needs you" hint="A session is waiting for your approval or answer.">
+          <MinutesInput value={settings.alertWaitingMins} min={0} onChange={(alertWaitingMins) => update({ alertWaitingMins })} disabled={!settings.alertWaiting} suffix="min" />
+          <Switch checked={settings.alertWaiting} onCheckedChange={(alertWaiting) => update({ alertWaiting })} aria-label="Needs-you alert" />
+        </Row>
+        <Row title="When a session looks stuck" hint="Working, but no activity for this long. The menu also marks it ⚠ quiet.">
+          <MinutesInput value={settings.alertStuckMins || 15} min={1} onChange={(alertStuckMins) => update({ alertStuckMins })} disabled={settings.alertStuckMins === 0} suffix="min" />
+          <Switch checked={settings.alertStuckMins > 0} onCheckedChange={(on) => update({ alertStuckMins: on ? 15 : 0 })} aria-label="Stuck alert" />
+        </Row>
+        <Row title="When a long turn finishes" hint="Only for turns that ran at least this long.">
+          <MinutesInput value={settings.alertLongTurnMins || 5} min={1} onChange={(alertLongTurnMins) => update({ alertLongTurnMins })} disabled={settings.alertLongTurnMins === 0} suffix="min" />
+          <Switch checked={settings.alertLongTurnMins > 0} onCheckedChange={(on) => update({ alertLongTurnMins: on ? 5 : 0 })} aria-label="Long turn alert" />
+        </Row>
+        <Row title="When a turn stops with an error" hint="Rate limits, an overloaded API, billing and sign-in problems.">
+          <Switch checked={settings.alertErrors} onCheckedChange={(alertErrors) => update({ alertErrors })} aria-label="Error alert" />
+        </Row>
+      </Group>
+
       <Group title="Notify me" footer="Heat warnings are always shown.">
         <Row title="When it starts keeping things awake">
           <Switch checked={settings.notifyEngage} onCheckedChange={(notifyEngage) => update({ notifyEngage })} aria-label="Notify on engage" />
@@ -337,5 +361,22 @@ export function NotificationsSection() {
         </Row>
       </Group>
     </>
+  );
+}
+
+/** A small number field that saves on blur/Enter, clamped to [min, max]. */
+function MinutesInput({ value, min, max = 600, onChange, disabled, suffix }: { value: number; min: number; max?: number; onChange: (v: number) => void; disabled?: boolean; suffix: string }) {
+  const [text, setText] = useState(String(value));
+  useEffect(() => setText(String(value)), [value]);
+  const commit = () => {
+    const n = Math.min(max, Math.max(min, Math.round(Number(text))));
+    if (Number.isFinite(n) && n !== value) onChange(n);
+    else setText(String(value));
+  };
+  return (
+    <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+      <Input type="number" min={min} max={max} value={text} disabled={disabled} onChange={(e) => setText(e.target.value)} onBlur={commit} onKeyDown={(e) => e.key === "Enter" && commit()} className="h-7 w-16" aria-label={suffix} />
+      {suffix}
+    </span>
   );
 }

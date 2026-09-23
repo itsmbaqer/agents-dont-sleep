@@ -9,7 +9,7 @@ use std::{
     ffi::OsStr,
     fs,
     path::{Path, PathBuf},
-    time::{Duration, UNIX_EPOCH},
+    time::UNIX_EPOCH,
 };
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
@@ -21,8 +21,6 @@ pub fn ours(s: &str) -> bool {
     let s = s.to_lowercase();
     MARKERS.iter().any(|m| s.contains(m))
 }
-/// ponytail: fixed cap on sessions with no events (crashed agent, very long silent tool).
-const STALE: Duration = Duration::from_secs(2 * 3600);
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Shape {
@@ -679,8 +677,9 @@ pub fn basename(s: &OsStr) -> String {
     b.strip_suffix(".exe").map(String::from).unwrap_or(b)
 }
 
-/// Reads session files, deleting ones whose agent process is gone or that went stale.
-pub fn scan_sessions(running: &Running) -> Vec<Session> {
+/// Reads session files, deleting ones whose agent process is gone or that sent nothing for
+/// `stale_secs` (a crashed agent, or a tool that ran silently longer than the user allows).
+pub fn scan_sessions(running: &Running, stale_secs: u64) -> Vec<Session> {
     let now = crate::settings::now();
     let dir = data_dir().join("sessions");
     let mut out = vec![];
@@ -697,7 +696,7 @@ pub fn scan_sessions(running: &Running) -> Vec<Session> {
             Some(pid) => running.pids.contains(&pid),
             None => def.procs.iter().any(|p| running.names.contains(*p)),
         };
-        if quiet_secs > STALE.as_secs() || !alive {
+        if quiet_secs > stale_secs || !alive {
             let _ = fs::remove_file(e.path());
             continue;
         }

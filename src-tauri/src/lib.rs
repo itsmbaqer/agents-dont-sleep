@@ -1,4 +1,5 @@
 mod agents;
+mod alerts;
 mod decide;
 mod power;
 mod settings;
@@ -62,6 +63,7 @@ struct Core {
     dismissed: HashMap<String, u64>,
     /// (unix secs, percent) while on battery, for the time-to-cutoff estimate.
     battery_samples: VecDeque<(u64, u8)>,
+    alerts: alerts::Memory,
 }
 
 struct AppState {
@@ -97,7 +99,8 @@ pub fn watchdog(pid: u32) {
 /// apply transitions under the lock, then update UI.
 fn tick(app: &AppHandle, sys: &mut System) {
     let running = agents::running(sys);
-    let sessions = agents::scan_sessions(&running);
+    let stale_secs = u64::from(app.state::<AppState>().core().settings.release_quiet_after_mins.max(10)) * 60;
+    let sessions = agents::scan_sessions(&running, stale_secs);
     let (battery, on_ac) = power::battery();
     let thermal = power::thermal();
     let low_power = power::low_power();
@@ -135,6 +138,8 @@ fn tick(app: &AppHandle, sys: &mut System) {
             _ => c.battery_samples.clear(),
         }
         let battery_eta_mins = tray::minutes_to(s.battery_cutoff, c.battery_samples.make_contiguous());
+        let session_alerts = alerts::due(&sessions, &mut c.alerts, &s);
+        let announced_finish = session_alerts.iter().any(|a| a.finished);
         let reason = decide(&Inputs {
             enabled: s.enabled,
             paused: s.paused_until > now(),
@@ -181,7 +186,8 @@ fn tick(app: &AppHandle, sys: &mut System) {
                     format!("Stopped at {}%. Your {device} can sleep now.", battery.unwrap_or(0)),
                 )),
                 Reason::Thermal => Some(("Running hot", format!("Letting your {device} sleep until it cools down."))),
-                Reason::NoAgents if s.notify_finish => {
+                // A per-session "finished" alert already said it.
+                Reason::NoAgents if s.notify_finish && !announced_finish => {
                     Some(("Agents finished", format!("Your {device} can sleep now.")))
                 }
                 _ => None,
@@ -231,13 +237,20 @@ fn tick(app: &AppHandle, sys: &mut System) {
             platform: power::platform(),
         };
         c.status = Some(status.clone());
-        (status, note)
+        (status, (note, session_alerts))
     };
+    let (note, session_alerts) = note;
 
-    if let Some((title, body)) = note {
-        let s = st.core().settings.clone();
-        let _ = app.notification().builder().title(title).body(body).show();
-        power::play_sound(&s.sound);
+    let banners: Vec<(String, String)> = note
+        .map(|(t, b)| (t.to_string(), b))
+        .into_iter()
+        .chain(session_alerts.into_iter().map(|a| (a.title, a.body)))
+        .collect();
+    if !banners.is_empty() {
+        for (title, body) in &banners {
+            let _ = app.notification().builder().title(title).body(body).show();
+        }
+        power::play_sound(&st.core().settings.sound);
     }
     update_tray(app, &status);
     let _ = app.emit("status", &status);
@@ -499,6 +512,7 @@ pub fn run() {
                     status: None,
                     dismissed: HashMap::new(),
                     battery_samples: VecDeque::new(),
+                    alerts: alerts::Memory::default(),
                 }),
                 tray: Mutex::new(tray::TrayState::default()),
                 kick: Mutex::new(kick_tx),
