@@ -1,0 +1,70 @@
+name: version
+
+# On every push to main:
+# - if there are changesets, open/update the "Version Packages" PR (bumps package.json,
+#   writes CHANGELOG.md);
+# - if that PR was just merged (CHANGELOG.md changed and v<version> isn't tagged yet),
+#   build the release. The release workflow is called directly because tags and PRs created
+#   with GITHUB_TOKEN don't trigger other workflows.
+on:
+  push:
+    branches: [main]
+
+concurrency: ${{ github.workflow }}-${{ github.ref }}
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      has-changesets: ${{ steps.changesets.outputs.has-changesets }}
+      release-tag: ${{ steps.release.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - id: changesets
+        uses: changesets/action@v2
+        with:
+          version-script: pnpm changeset version
+          commit-message: "chore: version packages"
+          pr-title: "chore: version packages"
+          # Optional: a fine-grained PAT (contents + pull requests: write) so CI runs on the
+          # Version Packages PR. Without it the PR has no checks and needs an admin merge.
+          github-token: ${{ secrets.CHANGESETS_TOKEN || github.token }}
+        env:
+          # @changesets/changelog-github looks up PR links and authors with this.
+          GITHUB_TOKEN: ${{ secrets.CHANGESETS_TOKEN || github.token }}
+
+      - id: release
+        if: steps.changesets.outputs.has-changesets == 'false'
+        run: |
+          version=$(node -p "require('./package.json').version")
+          tag="v$version"
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "$tag already released"
+          elif git diff --name-only "${{ github.event.before }}" "${{ github.sha }}" | grep -qx CHANGELOG.md; then
+            echo "tag=$tag" >> "$GITHUB_OUTPUT"
+            echo "Releasing $tag"
+          else
+            echo "No version bump in this push"
+          fi
+
+  release:
+    needs: version
+    if: needs.version.outputs.release-tag != ''
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ needs.version.outputs.release-tag }}
+    secrets: inherit

@@ -96,11 +96,30 @@ pnpm tauri build            # installers in src-tauri/target/release/bundle/
 
 ## Releasing
 
-1. Bump `version` in `package.json`. Tauri reads it from there.
-2. Run `git tag vX.Y.Z && git push origin vX.Y.Z`.
-3. The *release* workflow builds every platform into a **draft** GitHub release. Test the installers, then publish it.
+Versioning is automated with [Changesets](https://github.com/changesets/changesets). Nobody edits `version` in `package.json` by hand; Tauri reads the app version from there.
 
-Signing can be added later with no code changes. Add the `APPLE_*` secrets listed in `.github/workflows/release.yml`.
+1. **Add a changeset to each PR** that changes the app:
+   ```sh
+   pnpm changeset
+   ```
+   Pick `patch` for fixes, `minor` for features or `major` for breaking changes, then write one changelog line. Commit the new `.changeset/*.md` file with the PR. Docs-only and CI-only PRs don't need one.
+2. **Merge to `main`.** The **version** workflow opens (or updates) a **"chore: version packages"** PR. That PR bumps `package.json` from all pending changesets and writes `CHANGELOG.md`, with links to the PRs.
+3. **Merge the version PR.** The version workflow sees the new version and runs the **release** workflow, which builds four installers (macOS Apple silicon and Intel, Windows, Linux) into a **draft** GitHub release tagged `vX.Y.Z`. This takes about 20 minutes.
+4. **Test the installers, then publish the draft** under *Releases*.
+
+**Pre-releases:** push a tag by hand to build a test release from any commit on `main`. A tag with a `-` in it is marked as a pre-release.
+```sh
+git tag v0.2.0-rc.1 && git push origin v0.2.0-rc.1
+```
+
+**If a release job fails:**
+1. Fix it in a PR.
+2. Delete the draft and its tag: `gh release delete vX.Y.Z --cleanup-tag`.
+3. Push the tag again by hand, from the fixed commit.
+
+**CI on the version PR:** GitHub doesn't run workflows on PRs created with the built-in token, so the version PR has no checks and needs an admin merge. To get CI on it, add a fine-grained personal access token as the repository secret `CHANGESETS_TOKEN`, with **Contents** and **Pull requests** set to *read and write* for this repo.
+
+**Signing** can be added later with no code changes. Add the `APPLE_*` secrets listed in `.github/workflows/release.yml`.
 
 ## License
 
