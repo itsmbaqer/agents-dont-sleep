@@ -639,6 +639,8 @@ pub struct Session {
     pub errors: u32,
     /// Why the last turn failed (Claude StopFailure kind, e.g. "rate_limit"), else empty.
     pub error_kind: String,
+    /// "Stop counting this session" from the tray, until its next event.
+    pub dismissed: bool,
 }
 
 impl Session {
@@ -720,6 +722,7 @@ pub fn scan_sessions(running: &Running) -> Vec<Session> {
             turns: r.turns,
             errors: r.errors,
             error_kind: r.error_kind,
+            dismissed: false,
         });
     }
     out.sort_by(|a, b| (&a.agent, &a.id).cmp(&(&b.agent, &b.id)));

@@ -58,7 +58,9 @@ fn main() {
         cwd: arg(3),
         ..Default::default()
     };
-    ev.term = name_only(&std::env::var("TERM_PROGRAM").unwrap_or_default(), 40);
+    // The terminal app: its bundle id on macOS (tells Cursor from VS Code), else TERM_PROGRAM.
+    let term = std::env::var("__CFBundleIdentifier").or_else(|_| std::env::var("TERM_PROGRAM"));
+    ev.term = name_only(&term.unwrap_or_default(), 60);
     if sid.is_empty() {
         let mut input = String::new();
         let _ = std::io::stdin().read_to_string(&mut input);

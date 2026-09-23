@@ -2,54 +2,50 @@ mod agents;
 mod decide;
 mod power;
 mod settings;
+mod tray;
 
 use decide::{decide, Inputs, Reason};
 use serde::Serialize;
 use settings::{now, DisplayOff, Settings};
 use std::{
+    collections::{HashMap, VecDeque},
     sync::{mpsc, Mutex},
     time::{Duration, Instant},
 };
 use sysinfo::System;
 use tauri::{
-    image::Image,
-    menu::{CheckMenuItem, IsMenuItem, Menu, MenuItem, PredefinedMenuItem},
-    AppHandle, Emitter, Manager, RunEvent, State, WebviewUrl, WebviewWindowBuilder, Wry,
+    menu::{Menu, MenuItem},
+    AppHandle, Emitter, Manager, RunEvent, State, WebviewUrl, WebviewWindowBuilder,
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 use tauri_plugin_notification::NotificationExt;
 
 const TICK: Duration = Duration::from_secs(2);
-/// macOS menu-bar icons are black template images the system tints; Windows/Linux trays need
-/// a self-contained colored icon that reads on light and dark taskbars.
-#[cfg(target_os = "macos")]
-const ICON_AWAKE: &[u8] = include_bytes!("../icons/tray-awake.png");
-#[cfg(target_os = "macos")]
-const ICON_IDLE: &[u8] = include_bytes!("../icons/tray-idle.png");
-#[cfg(not(target_os = "macos"))]
-const ICON_AWAKE: &[u8] = include_bytes!("../icons/tray-awake-color.png");
-#[cfg(not(target_os = "macos"))]
-const ICON_IDLE: &[u8] = include_bytes!("../icons/tray-idle-color.png");
-const TEMPLATE_ICONS: bool = cfg!(target_os = "macos");
+/// Battery samples used for the time-to-cutoff estimate.
+const BATTERY_WINDOW_SECS: u64 = 15 * 60;
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
-struct Status {
-    reason: Reason,
-    held: bool,
-    held_secs: u64,
-    lid_proof: bool,
-    battery: Option<u8>,
-    on_ac: bool,
-    thermal: Option<u8>,
-    low_power: bool,
-    lid_closed: bool,
-    working: usize,
-    sessions: Vec<agents::Session>,
-    process_agents: Vec<String>,
-    paused_until: u64,
-    platform: power::Platform,
+pub(crate) struct Status {
+    pub(crate) reason: Reason,
+    pub(crate) held: bool,
+    pub(crate) held_secs: u64,
+    pub(crate) lid_proof: bool,
+    pub(crate) battery: Option<u8>,
+    pub(crate) on_ac: bool,
+    pub(crate) thermal: Option<u8>,
+    pub(crate) low_power: bool,
+    pub(crate) lid_closed: bool,
+    pub(crate) working: usize,
+    /// Sessions waiting on a permission prompt (and still counted).
+    pub(crate) needs_you: usize,
+    /// Minutes until the battery reaches the cut-off at the current drain, when known.
+    pub(crate) battery_eta_mins: Option<u32>,
+    pub(crate) sessions: Vec<agents::Session>,
+    pub(crate) process_agents: Vec<String>,
+    pub(crate) paused_until: u64,
+    pub(crate) platform: power::Platform,
 }
 
 struct Core {
@@ -62,11 +58,16 @@ struct Core {
     lid_closed: bool,
     finished_at: Option<Instant>,
     status: Option<Status>,
-    menu_key: String,
+    /// Sessions the user stopped counting, by key → the `last_event` they were dismissed at.
+    dismissed: HashMap<String, u64>,
+    /// (unix secs, percent) while on battery, for the time-to-cutoff estimate.
+    battery_samples: VecDeque<(u64, u8)>,
 }
 
 struct AppState {
     core: Mutex<Core>,
+    /// Separate from `core`: menu calls hop to the main thread, which may want `core`.
+    tray: Mutex<tray::TrayState>,
     kick: Mutex<mpsc::Sender<()>>,
 }
 
@@ -106,12 +107,34 @@ fn tick(app: &AppHandle, sys: &mut System) {
     let external = monitors > usize::from(!lid);
 
     let st = app.state::<AppState>();
+    let mut sessions = sessions;
     let (status, note) = {
         let mut c = st.core();
         let s = c.settings.clone();
+        // A dismissal lasts until the session's next event.
+        c.dismissed.retain(|k, at| sessions.iter().any(|x| tray::key(x) == *k && x.last_event == *at));
+        for x in &mut sessions {
+            x.dismissed = c.dismissed.contains_key(&tray::key(x));
+        }
         let process_agents: Vec<String> =
             s.process_agents.iter().filter(|n| running.names.contains(&n.to_lowercase())).cloned().collect();
-        let working = sessions.iter().filter(|x| x.active()).count() + process_agents.len();
+        let counted = || sessions.iter().filter(|x| x.active() && !x.dismissed);
+        let working = counted().count() + process_agents.len();
+        let needs_you = counted().filter(|x| x.state == "waiting").count();
+
+        let t = now();
+        match battery {
+            Some(pct) if !on_ac => {
+                if c.battery_samples.back().is_none_or(|&(at, _)| t.saturating_sub(at) >= 60) {
+                    c.battery_samples.push_back((t, pct));
+                }
+                while c.battery_samples.front().is_some_and(|&(at, _)| t.saturating_sub(at) > BATTERY_WINDOW_SECS) {
+                    c.battery_samples.pop_front();
+                }
+            }
+            _ => c.battery_samples.clear(),
+        }
+        let battery_eta_mins = tray::minutes_to(s.battery_cutoff, c.battery_samples.make_contiguous());
         let reason = decide(&Inputs {
             enabled: s.enabled,
             paused: s.paused_until > now(),
@@ -200,6 +223,8 @@ fn tick(app: &AppHandle, sys: &mut System) {
             low_power,
             lid_closed: lid,
             working,
+            needs_you,
+            battery_eta_mins,
             sessions,
             process_agents,
             paused_until: s.paused_until,
@@ -226,170 +251,15 @@ fn plural(n: usize) -> &'static str {
     }
 }
 
-/// "Alt+Super+KeyL" → "⌥⌘L" on macOS, "Ctrl+Alt+Shift+L" elsewhere.
-fn pretty_shortcut(s: &str, mac: bool) -> String {
-    let parts = s.split('+').map(|t| match (t.to_lowercase().as_str(), mac) {
-        ("alt" | "option", true) => "⌥".to_string(),
-        ("super" | "cmd" | "command", true) => "⌘".into(),
-        ("shift", true) => "⇧".into(),
-        ("ctrl" | "control", true) => "⌃".into(),
-        ("ctrl" | "control", false) => "Ctrl".into(),
-        ("super" | "cmd" | "command", false) => "Win".into(),
-        _ => t.trim_start_matches("Key").trim_start_matches("Digit").to_string(),
-    });
-    parts.collect::<Vec<_>>().join(if mac { "" } else { "+" })
-}
-
-fn low_power_name() -> &'static str {
-    match power::OS {
-        "macos" => "Low Power Mode",
-        "windows" => "Battery saver",
-        _ => "Power saver",
-    }
-}
-
-fn status_line(s: &Status, set: &Settings) -> String {
-    match s.reason {
-        Reason::Holding => format!(
-            "Awake — {} · {}h {:02}m",
-            if s.lid_proof { "lid-proof" } else { "lid open only" },
-            s.held_secs / 3600,
-            s.held_secs / 60 % 60
-        ),
-        Reason::NoAgents => format!("Idle — your {} can sleep normally", power::DEVICE),
-        Reason::Paused => format!("Paused · {} min left", s.paused_until.saturating_sub(now()).div_ceil(60)),
-        Reason::Disabled => {
-            format!("Off — press {} to turn on", pretty_shortcut(&set.shortcut, cfg!(target_os = "macos")))
-        }
-        Reason::Battery => format!("Held off — battery {}% (limit {}%)", s.battery.unwrap_or(0), set.battery_cutoff),
-        Reason::Thermal => format!("Held off — your {} is running hot", power::DEVICE),
-        Reason::LowPower => format!("Held off — {} is on", low_power_name()),
-        Reason::NotPluggedIn => "Held off — not plugged in".into(),
-    }
-}
-
-/// Labels for the whole menu; the menu is rebuilt only when these change (≈ once a minute).
-fn menu_labels(s: &Status, set: &Settings) -> Vec<(String, String, bool)> {
-    let mut v: Vec<(String, String, bool)> = vec![];
-    let mut info = |label: String| v.push((String::new(), label, false));
-    info(status_line(s, set));
-    info(match s.battery {
-        Some(b) => {
-            format!("Battery {b}%{} · stops below {}%", if s.on_ac { " (on power)" } else { "" }, set.battery_cutoff)
-        }
-        None => "On power adapter".into(),
-    });
-    info("-".into());
-    info(match s.working {
-        0 => "No agents working".into(),
-        n => format!("Agents · {n} working"),
-    });
-    for x in &s.sessions {
-        let dot = match x.state.as_str() {
-            "working" => "●",
-            "waiting" => "◐",
-            _ => "○",
-        };
-        let project = if x.project.is_empty() { String::new() } else { format!(" — {}", x.project) };
-        let waiting = if x.state == "waiting" { " (waiting for you)" } else { "" };
-        info(format!("    {dot} {}{project}{waiting}", x.name));
-    }
-    for p in &s.process_agents {
-        info(format!("    ● {p} (running)"));
-    }
-    v.push(("-".into(), "-".into(), false));
-    v.push(("toggle".into(), format!("Enabled|{}", set.enabled), true));
-    if s.reason == Reason::Paused {
-        v.push(("resume".into(), "Resume".into(), true));
-    } else {
-        v.push(("pause30".into(), "Pause for 30 minutes".into(), true));
-        v.push(("pause60".into(), "Pause for 1 hour".into(), true));
-    }
-    if power::NEEDS_GRANT && !s.lid_proof {
-        v.push(("grant".into(), "Allow lid-closed awake…".into(), true));
-    }
-    v.push(("-".into(), "-".into(), false));
-    v.push(("settings".into(), "Settings…".into(), true));
-    v.push(("quit".into(), "Quit Agents Don't Sleep".into(), true));
-    v
-}
-
-fn build_menu(app: &AppHandle, labels: &[(String, String, bool)], set: &Settings) -> tauri::Result<Menu<Wry>> {
-    let mut items: Vec<Box<dyn IsMenuItem<Wry>>> = vec![];
-    for (i, (id, label, enabled)) in labels.iter().enumerate() {
-        if label == "-" {
-            items.push(Box::new(PredefinedMenuItem::separator(app)?));
-        } else if id == "toggle" {
-            let checked = set.enabled;
-            let item = CheckMenuItem::with_id(app, "toggle", "Enabled", true, checked, Some(set.shortcut.as_str()))
-                .or_else(|_| CheckMenuItem::with_id(app, "toggle", "Enabled", true, checked, None::<&str>))?;
-            items.push(Box::new(item));
-        } else {
-            let accel = match id.as_str() {
-                "settings" => Some("CmdOrCtrl+,"),
-                "quit" => Some("CmdOrCtrl+Q"),
-                _ => None,
-            };
-            let id = if id.is_empty() { format!("info{i}") } else { id.clone() };
-            items.push(Box::new(MenuItem::with_id(app, id, label, *enabled, accel)?));
-        }
-    }
-    let refs: Vec<&dyn IsMenuItem<Wry>> = items.iter().map(|b| b.as_ref()).collect();
-    Menu::with_items(app, &refs)
-}
-
 fn update_tray(app: &AppHandle, s: &Status) {
     let st = app.state::<AppState>();
     let set = st.core().settings.clone();
-    let labels = menu_labels(s, &set);
-    let key = format!("{labels:?}{}", s.held);
-    {
-        let mut c = st.core();
-        if c.menu_key == key {
-            return;
-        }
-        c.menu_key = key;
-    }
-    let Some(tray) = app.tray_by_id("main") else { return };
-    match build_menu(app, &labels, &set) {
-        Ok(menu) => {
-            let _ = tray.set_menu(Some(menu));
-        }
-        Err(e) => eprintln!("tray menu: {e}"),
-    }
-    if let Ok(img) = Image::from_bytes(if s.held { ICON_AWAKE } else { ICON_IDLE }) {
-        let _ = tray.set_icon_with_as_template(Some(img), TEMPLATE_ICONS);
-    }
-    let title = tray_title(&s.sessions, &s.process_agents);
-    let mut tooltip = status_line(s, &set);
-    // Windows can't show text beside a tray icon, so the counts go in the tooltip there.
-    if cfg!(windows) && !title.is_empty() {
-        tooltip = format!("{tooltip}\n{title}");
-    }
-    let _ = tray.set_title(if title.is_empty() { None } else { Some(title) });
-    let _ = tray.set_tooltip(Some(tooltip));
-}
-
-/// Text beside the tray icon: active (working or waiting) sessions per agent, e.g.
-/// "Claude 2" or "Claude 2 · Codex 1"; "3 agents · 5" when more would crowd the menu bar.
-fn tray_title(sessions: &[agents::Session], process_agents: &[String]) -> String {
-    let mut groups: Vec<(&str, usize)> = vec![];
-    let names = sessions
-        .iter()
-        .filter(|x| x.active())
-        .map(|x| x.name.split(' ').next().unwrap_or(&x.name)) // "Claude Code" → "Claude"
-        .chain(process_agents.iter().map(String::as_str));
-    for name in names {
-        match groups.iter_mut().find(|(g, _)| *g == name) {
-            Some((_, n)) => *n += 1,
-            None => groups.push((name, 1)),
-        }
-    }
-    match groups.len() {
-        0 => String::new(),
-        1 | 2 => groups.iter().map(|(g, n)| format!("{g} {n}")).collect::<Vec<_>>().join(" · "),
-        k => format!("{k} agents · {}", groups.iter().map(|(_, n)| n).sum::<usize>()),
-    }
+    // Only look at agent configs when there's nothing to show (the "Connect your agents…" nudge).
+    let connected = !s.sessions.is_empty()
+        || !s.process_agents.is_empty()
+        || agents::statuses().iter().any(|a| a.state == "installed");
+    let mut t = st.tray.lock().unwrap_or_else(|e| e.into_inner());
+    tray::update(app, &mut t, s, &set, connected);
 }
 
 fn update_settings(app: &AppHandle, f: impl FnOnce(&mut Settings)) {
@@ -434,15 +304,39 @@ fn on_menu(app: &AppHandle, id: &str) {
         "toggle" => update_settings(app, |s| s.enabled = !s.enabled),
         "pause30" => update_settings(app, |s| s.paused_until = now() + 30 * 60),
         "pause60" => update_settings(app, |s| s.paused_until = now() + 60 * 60),
+        "pauseinf" => update_settings(app, |s| s.paused_until = u64::MAX),
         "resume" => update_settings(app, |s| s.paused_until = 0),
         "grant" => {
             let app = app.clone();
             std::thread::spawn(move || grant_permission(&app));
         }
-        "settings" => open_settings(app),
+        "settings" | "connect" => open_settings(app),
         "quit" => app.exit(0),
-        _ => {}
+        _ => session_action(app, id),
     }
+}
+
+/// `open:<key>`, `term:<key>`, `dismiss:<key>`, `undismiss:<key>` from a session's submenu.
+fn session_action(app: &AppHandle, id: &str) {
+    let Some((action, key)) = id.split_once(':') else { return };
+    let st = app.state::<AppState>();
+    let mut c = st.core();
+    let Some(x) = c.status.as_ref().and_then(|s| s.sessions.iter().find(|x| tray::key(x) == key)).cloned() else {
+        return;
+    };
+    match action {
+        "open" => power::open_path(&x.cwd),
+        "term" => power::activate_app(&x.term),
+        "dismiss" => {
+            c.dismissed.insert(key.to_string(), x.last_event);
+        }
+        "undismiss" => {
+            c.dismissed.remove(key);
+        }
+        _ => return,
+    }
+    drop(c);
+    st.kick();
 }
 
 fn register_shortcut(app: &AppHandle, accel: &str) -> Result<(), String> {
@@ -603,15 +497,17 @@ pub fn run() {
                     lid_closed: power::lid_closed(),
                     finished_at: None,
                     status: None,
-                    menu_key: String::new(),
+                    dismissed: HashMap::new(),
+                    battery_samples: VecDeque::new(),
                 }),
+                tray: Mutex::new(tray::TrayState::default()),
                 kick: Mutex::new(kick_tx),
             });
 
             let handle = app.handle().clone();
             tauri::tray::TrayIconBuilder::with_id("main")
-                .icon(Image::from_bytes(ICON_IDLE)?)
-                .icon_as_template(TEMPLATE_ICONS)
+                .icon(tray::icon(tray::Look::Idle))
+                .icon_as_template(tray::TEMPLATE_ICONS)
                 .show_menu_on_left_click(true)
                 .menu(&Menu::with_items(
                     &handle,
@@ -647,31 +543,4 @@ pub fn run() {
         RunEvent::Reopen { .. } => open_settings(app),
         _ => {}
     });
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn session(name: &str, state: &str) -> agents::Session {
-        agents::Session { name: name.into(), state: state.into(), ..Default::default() }
-    }
-
-    #[test]
-    fn tray_title_counts_active_sessions() {
-        assert_eq!(tray_title(&[], &[]), "");
-        assert_eq!(tray_title(&[session("Claude Code", "idle")], &[]), "");
-        let two =
-            [session("Claude Code", "working"), session("Claude Code", "waiting"), session("Claude Code", "idle")];
-        assert_eq!(tray_title(&two, &[]), "Claude 2");
-        let mixed = [session("Claude Code", "working"), session("Codex", "working")];
-        assert_eq!(tray_title(&mixed, &[]), "Claude 1 · Codex 1");
-        assert_eq!(tray_title(&mixed, &["aider".into()]), "3 agents · 3");
-    }
-
-    #[test]
-    fn shortcuts_read_per_os() {
-        assert_eq!(pretty_shortcut("Alt+Super+KeyL", true), "⌥⌘L");
-        assert_eq!(pretty_shortcut("Control+Alt+Shift+KeyL", false), "Ctrl+Alt+Shift+L");
-    }
 }

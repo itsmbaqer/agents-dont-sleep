@@ -52,7 +52,7 @@ No root is used.
 
 - The hook helper keeps activity metadata only. Per session it records:
   - the session id and working folder
-  - the agent's pid and its terminal app (`TERM_PROGRAM`, e.g. `vscode`)
+  - the agent's pid and its terminal app (the macOS bundle id such as `com.microsoft.VSCode`, or `TERM_PROGRAM`)
   - the current event and tool **names** (e.g. `PreToolUse`, `Bash`) and the model name
   - timestamps
   - counts of tool calls, turns and errors

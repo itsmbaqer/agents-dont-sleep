@@ -32,6 +32,20 @@ export function GeneralSection() {
         <Row title="Toggle shortcut" hint={os === "linux" ? "Click, then press the new key combination. Global shortcuts don't work on Wayland." : "Click, then press the new key combination."}>
           <ShortcutInput value={settings.shortcut} os={os} onChange={(shortcut) => update({ shortcut })} />
         </Row>
+        {os !== "windows" && (
+          <Row title="Menu bar label" hint="Text next to the tray icon. ◐ marks sessions waiting for you.">
+            <Select value={settings.trayLabel} onValueChange={(v) => update({ trayLabel: v as typeof settings.trayLabel })}>
+              <SelectTrigger className="w-48" aria-label="Menu bar label">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="full">Agents · Claude 2 · Codex 1</SelectItem>
+                <SelectItem value="count">Count · 3</SelectItem>
+                <SelectItem value="off">Icon only</SelectItem>
+              </SelectContent>
+            </Select>
+          </Row>
+        )}
         <Row title="Launch at login" hint="Also makes sure a crash or restart never leaves sleep disabled.">
           <Switch checked={settings.launchAtLogin} onCheckedChange={(launchAtLogin) => update({ launchAtLogin })} aria-label="Launch at login" />
         </Row>

@@ -22,6 +22,10 @@ export interface Settings {
   launchAtLogin: boolean;
   processAgents: string[];
   firstRun: number;
+  hooksVersion: number;
+  trayLabel: "full" | "count" | "off";
+  /** Flag a working session with no events for this long (0 = never). */
+  alertStuckMins: number;
 }
 
 export type Reason =
@@ -56,6 +60,8 @@ export interface Session {
   errors: number;
   /** Why the last turn failed ("rate_limit", …), else "". */
   errorKind: string;
+  /** "Stop counting this session" from the tray. */
+  dismissed: boolean;
 }
 
 export interface Platform {
@@ -77,6 +83,8 @@ export interface Status {
   lowPower: boolean;
   lidClosed: boolean;
   working: number;
+  needsYou: number;
+  batteryEtaMins: number | null;
   sessions: Session[];
   processAgents: string[];
   pausedUntil: number;

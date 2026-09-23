@@ -23,6 +23,17 @@ pub enum DisplayOff {
     AfterFinish,
 }
 
+/// Text beside the tray icon.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub enum TrayLabel {
+    /// "Claude 2 · Codex 1"
+    Full,
+    /// "3"
+    Count,
+    Off,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Settings {
@@ -50,6 +61,9 @@ pub struct Settings {
     pub first_run: u64,
     /// `agents::HOOKS_VERSION` that connected agents' hooks were last written with.
     pub hooks_version: u32,
+    pub tray_label: TrayLabel,
+    /// A working session with no events for this long is flagged (0 = never).
+    pub alert_stuck_mins: u32,
 }
 
 impl Default for Settings {
@@ -75,6 +89,8 @@ impl Default for Settings {
             process_agents: ["aider", "goose", "cline", "conductor"].map(String::from).to_vec(),
             first_run: 0,
             hooks_version: 0,
+            tray_label: TrayLabel::Full,
+            alert_stuck_mins: 15,
         }
     }
 }
