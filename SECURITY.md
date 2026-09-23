@@ -58,5 +58,5 @@ No root is used.
   - counts of tool calls, turns and errors
   - the error **kind** when a turn fails (e.g. `rate_limit`)
 - Prompts, commands, file paths inside tool input, file contents and tool output are never kept. Names are only accepted as short identifiers, never free text.
-- Everything it records stays in `~/.agents-dont-sleep/`.
+- Everything it records stays in `~/.agents-dont-sleep/`: live session records in `sessions/`, and daily totals (agent time, time kept awake, counts, per-session summaries with project folder names) in `stats/`, which keeps 30 days. Delete the folder to erase it.
 - The app makes no network requests and has no telemetry.

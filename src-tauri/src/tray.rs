@@ -370,6 +370,15 @@ pub fn spec(s: &Status, set: &Settings, connected: bool) -> Vec<Node> {
         v.push(item("grant", "Allow lid-closed awake…"));
     }
     v.push(Node::Sep);
+    if s.today_agent_secs > 0 || s.today_held_secs > 0 {
+        v.push(Node::Item {
+            id: "today".into(),
+            text: format!("Today: {} of agent work · kept awake {}", dur(s.today_agent_secs), dur(s.today_held_secs)),
+            enabled: true,
+            live: true,
+            accel: None,
+        });
+    }
     v.push(Node::Item {
         id: "settings".into(),
         text: "Settings…".into(),
@@ -617,6 +626,8 @@ mod tests {
             paused_until: 0,
             manual_until: 0,
             sleep_when_done: false,
+            today_agent_secs: 0,
+            today_held_secs: 0,
             platform: power::platform(),
         }
     }

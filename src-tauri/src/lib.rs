@@ -3,6 +3,7 @@ mod alerts;
 mod decide;
 mod power;
 mod settings;
+mod stats;
 mod tray;
 
 use decide::{decide, Inputs, Reason};
@@ -50,6 +51,9 @@ pub(crate) struct Status {
     pub(crate) manual_until: u64,
     /// One-shot "Sleep when agents finish".
     pub(crate) sleep_when_done: bool,
+    /// Today so far: agent working seconds (all agents added up) and time kept awake.
+    pub(crate) today_agent_secs: u64,
+    pub(crate) today_held_secs: u64,
     pub(crate) platform: power::Platform,
 }
 
@@ -70,6 +74,7 @@ struct Core {
     alerts: alerts::Memory,
     /// "Sleep when agents finish": one-shot, deliberately not saved.
     sleep_when_done: bool,
+    stats: stats::Tracker,
 }
 
 struct AppState {
@@ -263,8 +268,14 @@ fn tick(app: &AppHandle, sys: &mut System) {
             paused_until: s.paused_until,
             manual_until: s.manual_until,
             sleep_when_done: c.sleep_when_done,
+            today_agent_secs: 0,
+            today_held_secs: 0,
             platform: power::platform(),
         };
+        let mut status = status;
+        c.stats.tick(t, &stats::today(), &status.sessions, &status.process_agents, status.held, battery, on_ac);
+        status.today_agent_secs = c.stats.day().agent_secs.values().sum();
+        status.today_held_secs = c.stats.day().held_secs;
         c.status = Some(status.clone());
         (status, (note, session_alerts, sleep_after))
     };
@@ -321,12 +332,21 @@ fn update_settings(app: &AppHandle, f: impl FnOnce(&mut Settings)) {
 }
 
 fn open_settings(app: &AppHandle) {
+    open_settings_at(app, "");
+}
+
+/// Opens Settings on a tab ("activity", "agents"; "" = where it was).
+fn open_settings_at(app: &AppHandle, tab: &str) {
     if let Some(w) = app.get_webview_window("settings") {
         let _ = w.show();
         let _ = w.set_focus();
+        if !tab.is_empty() {
+            let _ = app.emit_to("settings", "navigate", tab);
+        }
         return;
     }
-    let w = WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("index.html".into()))
+    let url = if tab.is_empty() { "index.html".to_string() } else { format!("index.html#{tab}") };
+    let w = WebviewWindowBuilder::new(app, "settings", WebviewUrl::App(url.into()))
         .title("Agents Don't Sleep")
         .inner_size(720.0, 600.0)
         .min_inner_size(640.0, 480.0)
@@ -371,7 +391,9 @@ fn on_menu(app: &AppHandle, id: &str) {
             let app = app.clone();
             std::thread::spawn(move || grant_permission(&app));
         }
-        "settings" | "connect" => open_settings(app),
+        "settings" => open_settings(app),
+        "connect" => open_settings_at(app, "agents"),
+        "today" => open_settings_at(app, "activity"),
         "quit" => app.exit(0),
         _ => session_action(app, id),
     }
@@ -497,6 +519,16 @@ async fn uninstall_grant(app: AppHandle) -> Result<(), String> {
     res
 }
 
+/// The last `n` days of activity (oldest first), today from memory so it's current.
+#[tauri::command]
+fn stats_days(st: State<AppState>, n: i64) -> Vec<stats::Day> {
+    let mut days = stats::days(n.clamp(1, 30));
+    if let Some(last) = days.last_mut() {
+        *last = st.core().stats.day().clone();
+    }
+    days
+}
+
 #[tauri::command]
 fn sounds() -> Vec<String> {
     power::sounds()
@@ -525,7 +557,8 @@ pub fn run() {
             install_grant,
             uninstall_grant,
             sounds,
-            preview_sound
+            preview_sound,
+            stats_days
         ])
         .setup(move |app| {
             #[cfg(target_os = "macos")]
@@ -541,6 +574,7 @@ pub fn run() {
             if first_launch {
                 s.first_run = now();
             }
+            stats::prune();
             let _ = agents::install_hook_binary();
             if agents::refresh_integrations(s.hooks_version) {
                 s.hooks_version = agents::HOOKS_VERSION;
@@ -562,6 +596,7 @@ pub fn run() {
                     battery_samples: VecDeque::new(),
                     alerts: alerts::Memory::default(),
                     sleep_when_done: false,
+                    stats: stats::Tracker::load(now()),
                 }),
                 tray: Mutex::new(tray::TrayState::default()),
                 kick: Mutex::new(kick_tx),
@@ -600,7 +635,12 @@ pub fn run() {
     app.run(|app, ev| match ev {
         // Closing the settings window must not quit a menu-bar app.
         RunEvent::ExitRequested { code: None, api, .. } => api.prevent_exit(),
-        RunEvent::Exit => release(&mut app.state::<AppState>().core()),
+        RunEvent::Exit => {
+            let st = app.state::<AppState>();
+            let mut c = st.core();
+            release(&mut c);
+            c.stats.flush(now());
+        }
         // Launching the app again while it runs (Finder, Spotlight) opens Settings.
         #[cfg(target_os = "macos")]
         RunEvent::Reopen { .. } => open_settings(app),

@@ -34,14 +34,14 @@ export function GeneralSection() {
           <ShortcutInput value={settings.shortcut} os={os} onChange={(shortcut) => update({ shortcut })} />
         </Row>
         {os !== "windows" && (
-          <Row title="Menu bar label" hint="Text next to the tray icon. ◐ marks sessions waiting for you.">
+          <Row title="Menu bar label" hint="Per agent: “Claude 2 · Codex 1”. Count: “3”. ◐ marks sessions waiting for you.">
             <Select value={settings.trayLabel} onValueChange={(v) => update({ trayLabel: v as typeof settings.trayLabel })}>
-              <SelectTrigger className="w-48" aria-label="Menu bar label">
+              <SelectTrigger className="w-44" aria-label="Menu bar label">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="full">Agents · Claude 2 · Codex 1</SelectItem>
-                <SelectItem value="count">Count · 3</SelectItem>
+                <SelectItem value="full">Per agent</SelectItem>
+                <SelectItem value="count">Session count</SelectItem>
                 <SelectItem value="off">Icon only</SelectItem>
               </SelectContent>
             </Select>

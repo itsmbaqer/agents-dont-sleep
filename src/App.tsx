@@ -1,8 +1,9 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
-import { BatteryMedium, Bell, Bot, Monitor, Power, type LucideIcon } from "lucide-react";
+import { Activity, BatteryMedium, Bell, Bot, Monitor, Power, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { api, deviceName, type Settings, type Status } from "@/lib/api";
 import { AgentsSection, DisplaySection, GeneralSection, NotificationsSection, PowerSection } from "@/sections";
+import { ActivitySection } from "@/activity";
 
 interface Ctx {
   settings: Settings;
@@ -17,6 +18,7 @@ export const useApp = () => useContext(AppCtx);
 const SECTIONS: { id: string; label: string; icon: LucideIcon; view: () => ReactNode }[] = [
   { id: "general", label: "General", icon: Power, view: GeneralSection },
   { id: "agents", label: "Agents", icon: Bot, view: AgentsSection },
+  { id: "activity", label: "Activity", icon: Activity, view: ActivitySection },
   { id: "power", label: "Power", icon: BatteryMedium, view: PowerSection },
   { id: "display", label: "Display", icon: Monitor, view: DisplaySection },
   { id: "notifications", label: "Notifications", icon: Bell, view: NotificationsSection },
@@ -25,7 +27,10 @@ const SECTIONS: { id: string; label: string; icon: LucideIcon; view: () => React
 export default function App() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [status, setStatus] = useState<Status | null>(null);
-  const [section, setSection] = useState("general");
+  const [section, setSection] = useState(() => {
+    const tab = window.location.hash.slice(1);
+    return SECTIONS.some((s) => s.id === tab) ? tab : "general";
+  });
   const [flash, setFlash] = useState<{ text: string; error: boolean } | null>(null);
 
   const settingsRef = useRef<Settings | null>(null);
@@ -37,7 +42,11 @@ export default function App() {
   useEffect(() => {
     api.getSettings().then(apply);
     api.getStatus().then(setStatus);
-    const offs = [api.onStatus(setStatus), api.onSettings(apply)];
+    const offs = [
+      api.onStatus(setStatus),
+      api.onSettings(apply),
+      api.onNavigate((tab) => SECTIONS.some((s) => s.id === tab) && setSection(tab)),
+    ];
     return () => offs.forEach((off) => off.then((f) => f()));
   }, [apply]);
 

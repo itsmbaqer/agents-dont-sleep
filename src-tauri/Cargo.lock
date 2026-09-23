@@ -21,6 +21,7 @@ dependencies = [
 name = "agents-dont-sleep"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "libc",
  "objc2-foundation",
  "serde",

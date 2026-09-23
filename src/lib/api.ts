@@ -98,7 +98,35 @@ export interface Status {
   pausedUntil: number;
   manualUntil: number;
   sleepWhenDone: boolean;
+  todayAgentSecs: number;
+  todayHeldSecs: number;
   platform: Platform;
+}
+
+export interface SessionDay {
+  key: string;
+  agent: string;
+  name: string;
+  project: string;
+  firstSeen: number;
+  lastSeen: number;
+  workingSecs: number;
+  turns: number;
+  tools: number;
+  errors: number;
+}
+
+export interface Day {
+  /** Local date "YYYY-MM-DD". */
+  date: string;
+  /** Working seconds per agent id. */
+  agentSecs: Record<string, number>;
+  heldSecs: number;
+  turns: number;
+  tools: number;
+  errors: number;
+  batteryUsed: number;
+  sessions: SessionDay[];
 }
 
 export interface AgentStatus {
@@ -119,10 +147,13 @@ export const api = {
   installGrant: () => invoke<void>("install_grant"),
   uninstallGrant: () => invoke<void>("uninstall_grant"),
   sounds: () => invoke<string[]>("sounds"),
+  statsDays: (n: number) => invoke<Day[]>("stats_days", { n }),
   previewSound: (name: string) => invoke<void>("preview_sound", { name }),
   onStatus: (cb: (s: Status) => void) => listen<Status>("status", (e) => cb(e.payload)),
   /** Fired whenever settings change, including from the tray menu or ⌥⌘L. */
   onSettings: (cb: (s: Settings) => void) => listen<Settings>("settings", (e) => cb(e.payload)),
+  /** The tray asks the open window to show a tab ("activity", "agents"). */
+  onNavigate: (cb: (tab: string) => void) => listen<string>("navigate", (e) => cb(e.payload)),
 };
 
 /** "Alt+Super+KeyL" → "⌥⌘L" on macOS, "Ctrl+Alt+Shift+L" elsewhere. */
@@ -134,6 +165,13 @@ export function prettyShortcut(accel: string, os: Platform["os"] = "macos") {
     .split("+")
     .map((t) => map[t.toLowerCase()] ?? t.replace(/^Key|^Digit/, "").toUpperCase())
     .join(os === "macos" ? "" : "+");
+}
+
+/** "45s", "12m", "1h 05m" (same as the tray). */
+export function dur(secs: number) {
+  if (secs < 60) return `${Math.floor(secs)}s`;
+  if (secs < 3600) return `${Math.floor(secs / 60)}m`;
+  return `${Math.floor(secs / 3600)}h ${String(Math.floor(secs / 60) % 60).padStart(2, "0")}m`;
 }
 
 /** "Mac" / "PC" / "computer", for copy. */
