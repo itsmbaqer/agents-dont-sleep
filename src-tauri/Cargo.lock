@@ -9,6 +9,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "ads-hook"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "sysinfo",
+]
+
+[[package]]
 name = "agents-dont-sleep"
 version = "0.1.0"
 dependencies = [
@@ -22,6 +30,7 @@ dependencies = [
  "tauri-plugin-autostart",
  "tauri-plugin-global-shortcut",
  "tauri-plugin-notification",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

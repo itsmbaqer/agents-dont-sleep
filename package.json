@@ -2,12 +2,20 @@
   "name": "agents-dont-sleep",
   "private": true,
   "version": "0.1.0",
+  "description": "Keeps your laptop awake, lid shut, while Claude Code, Codex and other coding agents work.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/losefor/agents-dont-sleep.git"
+  },
   "type": "module",
+  "packageManager": "pnpm@11.9.0",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "build:hook": "node scripts/build-hook.mjs"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.3.0",

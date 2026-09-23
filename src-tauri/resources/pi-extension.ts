@@ -1,6 +1,6 @@
 // Agents Don't Sleep: reports pi's agent lifecycle to the menu-bar app. Safe to delete;
 // reinstall from Settings → Agents.
-const HOOK = "__HOOK__";
+const HOOK = __HOOK__;
 
 export default function (pi: any) {
   const send = (state: string, ctx: any) =>

@@ -4,7 +4,6 @@ use serde::Serialize;
 #[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "camelCase")]
 pub enum Reason {
-    Unlicensed,
     Disabled,
     Paused,
     NoAgents,
@@ -16,7 +15,6 @@ pub enum Reason {
 }
 
 pub struct Inputs {
-    pub licensed: bool,
     pub enabled: bool,
     pub paused: bool,
     pub working: usize,
@@ -35,9 +33,7 @@ pub struct Inputs {
 /// "battery low" when nothing is running.
 pub fn decide(i: &Inputs) -> Reason {
     use Reason::*;
-    if !i.licensed {
-        Unlicensed
-    } else if !i.enabled {
+    if !i.enabled {
         Disabled
     } else if i.paused {
         Paused
@@ -62,7 +58,6 @@ mod tests {
 
     fn base() -> Inputs {
         Inputs {
-            licensed: true,
             enabled: true,
             paused: false,
             working: 1,
@@ -80,7 +75,6 @@ mod tests {
     #[test]
     fn rules() {
         assert_eq!(decide(&base()), Holding);
-        assert_eq!(decide(&Inputs { licensed: false, ..base() }), Unlicensed);
         assert_eq!(decide(&Inputs { enabled: false, ..base() }), Disabled);
         assert_eq!(decide(&Inputs { paused: true, ..base() }), Paused);
         assert_eq!(decide(&Inputs { working: 0, battery: Some(5), ..base() }), NoAgents);

@@ -1,0 +1,15 @@
+[package]
+name = "ads-hook"
+version = "0.1.0"
+description = "Lifecycle hook helper for Agents Don't Sleep"
+edition = "2021"
+license = "MIT"
+
+# 8.3-safe name: on Windows the hook path is written in short form for cmd.exe/PowerShell.
+[[bin]]
+name = "adshook"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = "1"
+sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }

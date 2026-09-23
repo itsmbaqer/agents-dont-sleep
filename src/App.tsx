@@ -1,8 +1,8 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
-import { BatteryMedium, Bell, Bot, KeyRound, Monitor, Power, type LucideIcon } from "lucide-react";
+import { BatteryMedium, Bell, Bot, Monitor, Power, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { api, type Settings, type Status } from "@/lib/api";
-import { AgentsSection, DisplaySection, GeneralSection, LicenseSection, NotificationsSection, PowerSection } from "@/sections";
+import { api, deviceName, type Settings, type Status } from "@/lib/api";
+import { AgentsSection, DisplaySection, GeneralSection, NotificationsSection, PowerSection } from "@/sections";
 
 interface Ctx {
   settings: Settings;
@@ -20,7 +20,6 @@ const SECTIONS: { id: string; label: string; icon: LucideIcon; view: () => React
   { id: "power", label: "Power", icon: BatteryMedium, view: PowerSection },
   { id: "display", label: "Display", icon: Monitor, view: DisplaySection },
   { id: "notifications", label: "Notifications", icon: Bell, view: NotificationsSection },
-  { id: "license", label: "License", icon: KeyRound, view: LicenseSection },
 ];
 
 export default function App() {
@@ -131,7 +130,7 @@ function StatusPill({ status }: { status: Status | null }) {
         {held
           ? `${status!.working} working · ${Math.floor(mins / 60)}h ${mins % 60}m`
           : status?.reason === "noAgents" || !status
-            ? "Your Mac can sleep normally"
+            ? `Your ${deviceName(status?.platform.os)} can sleep normally`
             : REASON_TEXT[status.reason]}
       </p>
       {status?.battery != null && (
@@ -144,15 +143,14 @@ function StatusPill({ status }: { status: Status | null }) {
 }
 
 export const REASON_TEXT: Record<Status["reason"], string> = {
-  holding: "Keeping your Mac awake",
+  holding: "Keeping it awake",
   noAgents: "No agents working",
   disabled: "Turned off",
   paused: "Paused",
   battery: "Held off: battery limit",
   thermal: "Held off: running hot",
-  lowPower: "Held off: Low Power Mode",
+  lowPower: "Held off: power saving",
   notPluggedIn: "Held off: not plugged in",
-  unlicensed: "Trial ended",
 };
 
 export function Group({ title, footer, children }: { title?: string; footer?: ReactNode; children: ReactNode }) {

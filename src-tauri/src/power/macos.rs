@@ -1,37 +1,24 @@
-//! Everything that touches macOS power state. Lid-closed awake = the kernel SleepDisabled
-//! flag (`pmset -a disablesleep 1`), which needs root — granted once via a sudoers rule that
-//! allows exactly that command and nothing else.
+//! macOS. Lid-closed awake = the kernel SleepDisabled flag (`pmset -a disablesleep 1`), which
+//! needs root — granted once via a sudoers rule that allows exactly that command and nothing else.
+use super::{output, quiet, sound_files};
 use crate::settings::data_dir;
 use std::process::{Child, Command, Stdio};
 
+pub const OS: &str = "macos";
+pub const DEVICE: &str = "Mac";
+pub const NEEDS_GRANT: bool = true;
+
 const PMSET: &str = "/usr/bin/pmset";
 const SUDOERS: &str = "/etc/sudoers.d/agents-dont-sleep";
-
-fn quiet(cmd: &mut Command) -> bool {
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
-}
-
-fn output(cmd: &str, args: &[&str]) -> String {
-    Command::new(cmd)
-        .args(args)
-        .stdin(Stdio::null())
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-        .unwrap_or_default()
-}
+const SOUNDS_DIR: &str = "/System/Library/Sounds";
 
 /// Whether the sudoers rule is in place (`sudo -l <cmd>` checks without running it).
-pub fn has_sudoers() -> bool {
-    quiet(Command::new("/usr/bin/sudo").args(["-n", "-l", PMSET, "-a", "disablesleep", "1"]))
+pub fn has_grant() -> bool {
+    quiet("/usr/bin/sudo", &["-n", "-l", PMSET, "-a", "disablesleep", "1"])
 }
 
-pub fn set_sleep_disabled(on: bool) -> bool {
-    let v = if on { "1" } else { "0" };
-    quiet(Command::new("/usr/bin/sudo").args(["-n", PMSET, "-a", "disablesleep", v]))
+fn set_sleep_disabled(on: bool) -> bool {
+    quiet("/usr/bin/sudo", &["-n", PMSET, "-a", "disablesleep", if on { "1" } else { "0" }])
 }
 
 fn admin_shell(script: &str, prompt: &str) -> Result<(), String> {
@@ -40,10 +27,7 @@ fn admin_shell(script: &str, prompt: &str) -> Result<(), String> {
         script.replace('\\', "\\\\").replace('"', "\\\""),
         prompt
     );
-    let out = Command::new("/usr/bin/osascript")
-        .args(["-e", &apple])
-        .output()
-        .map_err(|e| e.to_string())?;
+    let out = Command::new("/usr/bin/osascript").args(["-e", &apple]).output().map_err(|e| e.to_string())?;
     if out.status.success() {
         Ok(())
     } else {
@@ -52,7 +36,7 @@ fn admin_shell(script: &str, prompt: &str) -> Result<(), String> {
 }
 
 /// One admin prompt: validate the rule with visudo, then install it root-owned 0440.
-pub fn install_sudoers() -> Result<(), String> {
+pub fn install_grant() -> Result<(), String> {
     let user = std::env::var("USER").map_err(|e| e.to_string())?;
     // The name ends up in sudoers and in a shell line; refuse anything unusual.
     if user.is_empty() || !user.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c)) {
@@ -77,64 +61,66 @@ pub fn install_sudoers() -> Result<(), String> {
     res
 }
 
-pub fn uninstall_sudoers() -> Result<(), String> {
+pub fn uninstall_grant() -> Result<(), String> {
     set_sleep_disabled(false);
     admin_shell(&format!("/bin/rm -f {SUDOERS}"), "Remove the lid-closed permission for Agents Don't Sleep.")
 }
 
-/// Detached shell in its own process group: when this app dies for any reason (even
-/// SIGKILL), it clears SleepDisabled so a crashed app can't leave a Mac hot in a bag.
-/// ponytail: only resets the flag; macOS idle sleep then puts a closed Mac to sleep.
-pub fn spawn_watchdog() {
-    use std::os::unix::process::CommandExt;
-    let script = format!(
-        "while kill -0 \"$1\" 2>/dev/null; do sleep 3; done; /usr/bin/sudo -n {PMSET} -a disablesleep 0"
-    );
-    let _ = Command::new("/bin/sh")
-        .args(["-c", &script, "ads-watchdog", &std::process::id().to_string()])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .process_group(0)
-        .spawn();
+/// SleepDisabled when granted, plus a plain `caffeinate` assertion that covers idle sleep when
+/// the rule is missing and shows up in `pmset -g assertions`. `-w` makes it die with us.
+pub struct Hold {
+    granted: bool,
+    caffeinate: Option<Child>,
 }
 
-/// A plain user-level assertion as well — covers idle sleep when the sudoers rule is missing,
-/// and shows up in `pmset -g assertions`. Dies with us thanks to `-w`.
-pub fn caffeinate() -> Option<Child> {
-    Command::new("/usr/bin/caffeinate")
+pub fn hold(granted: bool) -> Hold {
+    if granted {
+        set_sleep_disabled(true);
+    }
+    let caffeinate = Command::new("/usr/bin/caffeinate")
         .args(["-i", "-w", &std::process::id().to_string()])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .ok()
+        .ok();
+    Hold { granted, caffeinate }
 }
 
-/// (percent, on_ac) from `pmset -g batt`. Percent is None on Macs without a battery.
+impl Hold {
+    pub fn release(mut self) {
+        if self.granted {
+            set_sleep_disabled(false);
+        }
+        if let Some(mut c) = self.caffeinate.take() {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+    }
+}
+
+pub fn restore() {
+    if has_grant() {
+        set_sleep_disabled(false);
+    }
+}
+
+pub fn init() {}
+
 pub fn battery() -> (Option<u8>, bool) {
-    parse_batt(&output(PMSET, &["-g", "batt"]))
+    super::parse_pmset_batt(&output(PMSET, &["-g", "batt"]))
 }
 
-pub fn parse_batt(s: &str) -> (Option<u8>, bool) {
-    let on_ac = s.contains("'AC Power'");
-    let pct = s
-        .split(|c: char| c.is_whitespace() || c == ';')
-        .find_map(|w| w.strip_suffix('%')?.parse().ok());
-    (pct, on_ac)
+pub fn low_power() -> bool {
+    objc2_foundation::NSProcessInfo::processInfo().isLowPowerModeEnabled()
+}
+
+pub fn thermal() -> Option<u8> {
+    Some(objc2_foundation::NSProcessInfo::processInfo().thermalState().0 as u8)
 }
 
 pub fn lid_closed() -> bool {
-    output("/usr/sbin/ioreg", &["-r", "-k", "AppleClamshellState", "-d", "1"])
-        .contains("\"AppleClamshellState\" = Yes")
-}
-
-pub fn thermal_state() -> u8 {
-    objc2_foundation::NSProcessInfo::processInfo().thermalState().0 as u8
-}
-
-pub fn low_power_mode() -> bool {
-    objc2_foundation::NSProcessInfo::processInfo().isLowPowerModeEnabled()
+    output("/usr/sbin/ioreg", &["-r", "-k", "AppleClamshellState", "-d", "1"]).contains("\"AppleClamshellState\" = Yes")
 }
 
 /// Keeps App Nap from throttling the 2s poll loop while no window is visible.
@@ -157,11 +143,11 @@ pub fn user_idle_secs() -> u64 {
 }
 
 pub fn display_sleep_now() {
-    quiet(Command::new(PMSET).arg("displaysleepnow"));
+    quiet(PMSET, &["displaysleepnow"]);
 }
 
 pub fn sleep_now() {
-    quiet(Command::new(PMSET).arg("sleepnow"));
+    quiet(PMSET, &["sleepnow"]);
 }
 
 /// Lock via the private login.framework call the menu-bar "Lock Screen" item uses;
@@ -180,17 +166,12 @@ pub fn lock_screen() {
     }
 }
 
-const SOUNDS_DIR: &str = "/System/Library/Sounds";
-
 pub fn sounds() -> Vec<String> {
-    let mut v: Vec<String> = std::fs::read_dir(SOUNDS_DIR)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter_map(|e| e.file_name().to_str()?.strip_suffix(".aiff").map(String::from))
-        .collect();
-    v.sort();
-    v
+    sound_files(SOUNDS_DIR, ".aiff")
+}
+
+pub fn default_sound() -> &'static str {
+    "Glass"
 }
 
 pub fn play_sound(name: &str) {
@@ -201,19 +182,5 @@ pub fn play_sound(name: &str) {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn();
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::parse_batt;
-
-    #[test]
-    fn batt() {
-        let on_batt = "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=7077987)\t70%; discharging; 5:07 remaining present: true\n";
-        assert_eq!(parse_batt(on_batt), (Some(70), false));
-        let charging = "Now drawing from 'AC Power'\n -InternalBattery-0 (id=1)\t100%; charged; 0:00 remaining present: true\n";
-        assert_eq!(parse_batt(charging), (Some(100), true));
-        assert_eq!(parse_batt("Now drawing from 'AC Power'\n"), (None, true));
     }
 }

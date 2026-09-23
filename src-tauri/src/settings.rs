@@ -7,14 +7,11 @@ pub fn data_dir() -> PathBuf {
 }
 
 pub fn home() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".into()))
+    std::env::home_dir().unwrap_or_else(std::env::temp_dir)
 }
 
 pub fn now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -49,10 +46,6 @@ pub struct Settings {
     /// Agents without hooks: counted as working while a process with this name runs.
     pub process_agents: Vec<String>,
     pub first_run: u64,
-    pub license_key: String,
-    pub activation_id: String,
-    pub license_ok: bool,
-    pub license_checked_at: u64,
 }
 
 impl Default for Settings {
@@ -70,17 +63,12 @@ impl Default for Settings {
             notify_engage: false,
             notify_finish: true,
             notify_battery: true,
-            sound: "Glass".into(),
-            shortcut: "Alt+Super+KeyL".into(),
+            sound: crate::power::default_sound().into(),
+            // Win+L and Ctrl+Alt+L already lock the screen on Windows / most Linux desktops.
+            shortcut: if cfg!(target_os = "macos") { "Alt+Super+KeyL" } else { "Control+Alt+Shift+KeyL" }.into(),
             launch_at_login: true,
-            process_agents: ["aider", "goose", "cline", "conductor"]
-                .map(String::from)
-                .to_vec(),
+            process_agents: ["aider", "goose", "cline", "conductor"].map(String::from).to_vec(),
             first_run: 0,
-            license_key: String::new(),
-            activation_id: String::new(),
-            license_ok: false,
-            license_checked_at: 0,
         }
     }
 }
@@ -90,10 +78,7 @@ fn path() -> PathBuf {
 }
 
 pub fn load() -> Settings {
-    fs::read(path())
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default()
+    fs::read(path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
 }
 
 pub fn save(s: &Settings) -> std::io::Result<()> {

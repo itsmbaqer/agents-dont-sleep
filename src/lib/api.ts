@@ -21,14 +21,9 @@ export interface Settings {
   launchAtLogin: boolean;
   processAgents: string[];
   firstRun: number;
-  licenseKey: string;
-  activationId: string;
-  licenseOk: boolean;
-  licenseCheckedAt: number;
 }
 
 export type Reason =
-  | "unlicensed"
   | "disabled"
   | "paused"
   | "noAgents"
@@ -46,11 +41,12 @@ export interface Session {
   project: string;
 }
 
-export interface LicenseInfo {
-  configured: boolean;
-  state: "licensed" | "trial" | "expired" | "off";
-  trialDaysLeft: number;
-  buyUrl: string;
+export interface Platform {
+  os: "macos" | "windows" | "linux";
+  /** macOS needs a one-time admin grant for lid-closed awake. */
+  needsGrant: boolean;
+  /** Whether this OS reports thermal pressure (not on Windows). */
+  thermal: boolean;
 }
 
 export interface Status {
@@ -60,14 +56,14 @@ export interface Status {
   lidProof: boolean;
   battery: number | null;
   onAc: boolean;
-  thermal: number;
+  thermal: number | null;
   lowPower: boolean;
   lidClosed: boolean;
   working: number;
   sessions: Session[];
   processAgents: string[];
   pausedUntil: number;
-  license: LicenseInfo;
+  platform: Platform;
 }
 
 export interface AgentStatus {
@@ -84,23 +80,26 @@ export const api = {
   agents: () => invoke<AgentStatus[]>("agents_status"),
   installAgent: (id: string) => invoke<void>("install_agent", { id }),
   uninstallAgent: (id: string) => invoke<void>("uninstall_agent", { id }),
-  installSudoers: () => invoke<void>("install_sudoers"),
-  uninstallSudoers: () => invoke<void>("uninstall_sudoers"),
+  removeAllIntegrations: () => invoke<void>("remove_all_integrations"),
+  installGrant: () => invoke<void>("install_grant"),
+  uninstallGrant: () => invoke<void>("uninstall_grant"),
   sounds: () => invoke<string[]>("sounds"),
   previewSound: (name: string) => invoke<void>("preview_sound", { name }),
-  activateLicense: (key: string) => invoke<void>("activate_license", { key }),
-  deactivateLicense: () => invoke<void>("deactivate_license"),
-  openUrl: (url: string) => invoke<void>("open_url", { url }),
   onStatus: (cb: (s: Status) => void) => listen<Status>("status", (e) => cb(e.payload)),
   /** Fired whenever settings change, including from the tray menu or ⌥⌘L. */
   onSettings: (cb: (s: Settings) => void) => listen<Settings>("settings", (e) => cb(e.payload)),
 };
 
-/** "Alt+Super+KeyL" → "⌥⌘L" */
-export function prettyShortcut(accel: string) {
-  const map: Record<string, string> = { alt: "⌥", option: "⌥", super: "⌘", cmd: "⌘", command: "⌘", shift: "⇧", control: "⌃", ctrl: "⌃" };
+/** "Alt+Super+KeyL" → "⌥⌘L" on macOS, "Ctrl+Alt+Shift+L" elsewhere. */
+export function prettyShortcut(accel: string, os: Platform["os"] = "macos") {
+  const mac: Record<string, string> = { alt: "⌥", option: "⌥", super: "⌘", cmd: "⌘", command: "⌘", shift: "⇧", control: "⌃", ctrl: "⌃" };
+  const pc: Record<string, string> = { alt: "Alt", super: "Win", cmd: "Win", command: "Win", shift: "Shift", control: "Ctrl", ctrl: "Ctrl" };
+  const map = os === "macos" ? mac : pc;
   return accel
     .split("+")
     .map((t) => map[t.toLowerCase()] ?? t.replace(/^Key|^Digit/, "").toUpperCase())
-    .join("");
+    .join(os === "macos" ? "" : "+");
 }
+
+/** "Mac" / "PC" / "computer", for copy. */
+export const deviceName = (os?: Platform["os"]) => (os === "macos" ? "Mac" : os === "windows" ? "PC" : "computer");

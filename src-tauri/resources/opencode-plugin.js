@@ -1,6 +1,6 @@
 // Agents Don't Sleep: reports OpenCode session state to the menu-bar app. Safe to delete;
 // reinstall from Settings → Agents.
-const HOOK = "__HOOK__";
+const HOOK = __HOOK__;
 
 export const AgentsDontSleep = async ({ $, directory }) => ({
   event: async ({ event: e }) => {
