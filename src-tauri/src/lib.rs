@@ -391,7 +391,7 @@ fn on_menu(app: &AppHandle, id: &str) {
             let app = app.clone();
             std::thread::spawn(move || grant_permission(&app));
         }
-        "settings" => open_settings(app),
+        "settings" | "status" => open_settings(app),
         "connect" => open_settings_at(app, "agents"),
         "today" => open_settings_at(app, "activity"),
         "quit" => app.exit(0),

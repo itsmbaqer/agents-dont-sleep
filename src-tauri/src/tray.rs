@@ -96,9 +96,12 @@ pub enum Node {
 fn item(id: &str, text: impl Into<String>) -> Node {
     Node::Item { id: id.into(), text: text.into(), enabled: true, live: false, accel: None }
 }
+/// Readable information. Deliberately *enabled*: macOS draws disabled items in faint gray,
+/// which is hard to read; clicking one just closes the menu.
 fn info(id: impl Into<String>, text: impl Into<String>) -> Node {
-    Node::Item { id: id.into(), text: text.into(), enabled: false, live: true, accel: None }
+    Node::Item { id: id.into(), text: text.into(), enabled: true, live: true, accel: None }
 }
+/// Section headers keep the platform's dimmed header look.
 fn header(id: &str, text: &str) -> Node {
     Node::Item { id: id.into(), text: text.into(), enabled: false, live: false, accel: None }
 }
@@ -173,7 +176,8 @@ fn row_text(x: &Session, stuck_mins: u32) -> String {
         _ if x.dismissed => "not counted".to_string(),
         Section::NeedsYou => format!("waiting {}", dur(x.waiting_secs)),
         Section::Working => {
-            let mut d = dur(x.turn_secs);
+            // No turn start recorded yet (a session from an older helper): no timer, not "0s".
+            let mut d = if x.turn_secs > 0 { dur(x.turn_secs) } else { "working".into() };
             if !x.tool.is_empty() {
                 d += &format!(" · {}", x.tool);
             }
@@ -198,6 +202,7 @@ fn session_node(x: &Session, stuck_mins: u32) -> Node {
     let k = key(x);
     let state_line = match section(x) {
         Section::NeedsYou => format!("Waiting for you · {}", dur(x.waiting_secs)),
+        Section::Working if x.turn_secs == 0 => "Working".into(),
         Section::Working if x.tool.is_empty() => format!("Working for {}", dur(x.turn_secs)),
         Section::Working => format!("Working for {} · {}", dur(x.turn_secs), x.tool),
         Section::Failed => format!("Stopped: {}", error_label(&x.error_kind)),
@@ -208,14 +213,16 @@ fn session_node(x: &Session, stuck_mins: u32) -> Node {
     let mut children = vec![
         info(format!("{k}:state"), state_line),
         info(format!("{k}:quiet"), format!("Last activity {} ago", dur(x.quiet_secs))),
-        info(format!("{k}:model"), format!("Model: {}", if x.model.is_empty() { "—" } else { &x.model })),
         info(
             format!("{k}:counts"),
             format!("{} · {} · {}", plural(x.tools, "tool call"), plural(x.turns, "turn"), plural(x.errors, "error")),
         ),
         info(format!("{k}:started"), format!("Started {} ago", dur(crate::settings::now().saturating_sub(x.started)))),
-        Node::Sep,
     ];
+    if !x.model.is_empty() {
+        children.insert(2, info(format!("{k}:model"), format!("Model: {}", x.model)));
+    }
+    children.push(Node::Sep);
     if !x.cwd.is_empty() {
         children.push(item(&format!("open:{k}"), "Open project folder"));
     }
@@ -324,11 +331,11 @@ pub fn spec(s: &Status, set: &Settings, connected: bool) -> Vec<Node> {
     if !s.process_agents.is_empty() {
         v.push(header("h-procs", "Running (no hooks)"));
         for p in &s.process_agents {
-            v.push(header(&format!("p:{p}"), &format!("● {p}")));
+            v.push(info(format!("p:{p}"), format!("● {p}")));
         }
     }
     if sessions.is_empty() && s.process_agents.is_empty() {
-        v.push(if connected { header("none", "No agents running") } else { item("connect", "Connect your agents…") });
+        v.push(if connected { info("none", "No agents running") } else { item("connect", "Connect your agents…") });
     }
     v.push(Node::Sep);
     v.push(Node::Check {
@@ -466,14 +473,15 @@ fn build(
                 out.push(Box::new(it));
             }
             Node::Status { id, text, dot } => {
-                match IconMenuItem::with_id(app, id, text, false, Some(dot_image(*dot)), None::<&str>) {
+                // Enabled for legibility (see `info`); clicking the status opens Settings.
+                match IconMenuItem::with_id(app, id, text, true, Some(dot_image(*dot)), None::<&str>) {
                     Ok(it) => {
                         handles.insert(id.clone(), Handle::Icon(it.clone()));
                         out.push(Box::new(it));
                     }
                     // ponytail: menus without image support fall back to plain text.
                     Err(_) => {
-                        let it = MenuItem::with_id(app, id, text, false, None::<&str>)?;
+                        let it = MenuItem::with_id(app, id, text, true, None::<&str>)?;
                         handles.insert(id.clone(), Handle::Item(it.clone()));
                         out.push(Box::new(it));
                     }
@@ -695,6 +703,9 @@ mod tests {
         assert_eq!(row_text(&w, 15), "● Claude Code — api · 12m · Bash");
         w.quiet_secs = 18 * 60;
         assert_eq!(row_text(&w, 15), "● Claude Code — api · 12m · Bash · ⚠ quiet 18m");
+        w.turn_secs = 0;
+        w.quiet_secs = 0;
+        assert_eq!(row_text(&w, 15), "● Claude Code — api · working · Bash");
         let mut f = s("claude", "Claude Code", "idle");
         f.error_kind = "rate_limit".into();
         assert_eq!(row_text(&f, 15), "⚠ Claude Code · rate limited");
