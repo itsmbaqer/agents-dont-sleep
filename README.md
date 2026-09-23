@@ -11,7 +11,13 @@ A small tray app that keeps your laptop awake, even with the lid closed and in y
   - It respects Low Power Mode / Battery saver, and has a heat limit on macOS and Linux.
   - It locks the screen on lid close.
   - Every setting it touches is restored when agents finish, when you quit, or after a crash.
-- **Tray at a glance.** It shows status, battery and every live session. On macOS and Linux the tray label also shows counts like `Claude 2 · Codex 1`. You can pause for 30 minutes or an hour, or toggle it with a global shortcut.
+- **Tray at a glance.**
+  - Sessions are sorted by what needs attention: needs you, stopped with an error, working, idle.
+  - Each session shows its turn timer and current tool, and has a submenu with details: open the project folder, jump to its terminal, or stop counting it.
+  - The icon changes when an agent needs you. On macOS and Linux the label shows counts like `Claude 2 · Codex 1`.
+- **Watches your agents.** It notifies you when a session is waiting for you, looks stuck, finishes a long turn, or stops with an error (rate limit, overloaded, …).
+- **Activity.** Today's agent time, time kept awake, turns, tool calls and battery used, with a 7-day chart and a list of today's sessions.
+- **Manual controls.** Keep awake for 30 min, 1 h or until you stop it (no agent needed), pause, "Sleep when agents finish", and a global shortcut.
 
 ## Install
 
@@ -51,6 +57,8 @@ Open **Settings → Agents** and click **Connect** for each agent you use.
 | Pi | extension in `~/.pi/agent/extensions/` | Restart pi after connecting |
 | Hermes | `~/.hermes/config.yaml`, plus a gateway hook | |
 | aider, goose, cline, conductor, … | process detection | Counted as working while the process runs. The list is editable. |
+
+The hooks record activity metadata only: state, tool names, model, timings and counts. Prompts, commands, file contents and tool output are never kept (details in [SECURITY.md](SECURITY.md#privacy)).
 
 Only Claude Code has been tested end to end so far. The other integrations follow each agent's current hook docs. Bug reports are welcome.
 

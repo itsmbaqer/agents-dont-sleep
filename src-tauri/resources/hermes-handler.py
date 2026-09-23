@@ -1,4 +1,4 @@
-# Agents Don't Sleep: forwards Hermes gateway events to hook.sh. Safe to delete.
+# Agents Don't Sleep: forwards Hermes gateway events to the adshook helper. Safe to delete.
 import subprocess
 
 HOOK = __HOOK__
@@ -17,7 +17,7 @@ def handle(event_type, context):
         return
     sid = str((context or {}).get("session_id") or "gateway")
     subprocess.run(
-        [HOOK, "hermes", state, sid],
+        [HOOK, "hermes", state, sid, "", f"--event={event_type}"],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
