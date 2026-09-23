@@ -13,7 +13,47 @@ on:
         required: true
 
 jobs:
+  # One job finds or makes the draft, so the four builds can't race to create duplicates.
+  create:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      id: ${{ steps.draft.outputs.id }}
+    steps:
+      - id: draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+          BODY: |
+            Install steps for each OS are in the [README](https://github.com/itsmbaqer/agents-dont-sleep#install). What changed: [CHANGELOG](https://github.com/itsmbaqer/agents-dont-sleep/blob/main/CHANGELOG.md).
+
+            These builds are not code-signed yet:
+            - **macOS:** on first launch, go to System Settings → Privacy & Security → Open Anyway.
+            - **Windows:** at the SmartScreen prompt, click More info → Run anyway.
+        run: |
+          api="repos/$GITHUB_REPOSITORY"
+          # Tag now (already there for a tag pushed by hand). Tags made with GITHUB_TOKEN don't
+          # trigger workflows, and publishing the draft won't create one that rebuilds it.
+          gh api "$api/git/ref/tags/$TAG" >/dev/null 2>&1 ||
+            gh api "$api/git/refs" -f ref="refs/tags/$TAG" -f sha="$GITHUB_SHA" >/dev/null
+          # The published release wins over a leftover draft (sort_by puts draft=false first).
+          read -r id draft < <(gh api "$api/releases?per_page=100" --jq \
+            "[.[] | select(.tag_name == \"$TAG\")] | sort_by(.draft) | .[0] // empty | \"\(.id) \(.draft)\"") || true
+          if [ "$draft" = false ]; then
+            echo "$TAG is already published, nothing to build"
+            exit 0
+          fi
+          if [ -z "$id" ]; then
+            pre=false; case "$TAG" in *-*) pre=true ;; esac
+            id=$(gh api "$api/releases" -f tag_name="$TAG" -f name="Agents Don't Sleep $TAG" \
+              -f body="$BODY" -F draft=true -F prerelease="$pre" --jq .id)
+          fi
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: create
+    if: needs.create.outputs.id != ''
     permissions:
       contents: write
     strategy:
@@ -66,15 +106,6 @@ jobs:
           # APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           # APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
-          tagName: ${{ inputs.tag || github.ref_name }}
-          releaseName: "Agents Don't Sleep ${{ inputs.tag || github.ref_name }}"
-          releaseBody: |
-            Install steps for each OS are in the [README](https://github.com/itsmbaqer/agents-dont-sleep#install). What changed: [CHANGELOG](https://github.com/itsmbaqer/agents-dont-sleep/blob/main/CHANGELOG.md).
-
-            These builds are not code-signed yet:
-            - **macOS:** on first launch, go to System Settings → Privacy & Security → Open Anyway.
-            - **Windows:** at the SmartScreen prompt, click More info → Run anyway.
-          releaseDraft: true
-          prerelease: ${{ contains(inputs.tag || github.ref_name, '-') }}
+          releaseId: ${{ needs.create.outputs.id }}
           uploadUpdaterJson: false
           args: --target ${{ matrix.target }}
