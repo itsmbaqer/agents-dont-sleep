@@ -10,6 +10,10 @@ pub fn home() -> PathBuf {
     std::env::home_dir().unwrap_or_else(std::env::temp_dir)
 }
 
+/// "Until turned off" for pause and keep-awake end times. Far future, but still exact as a
+/// JavaScript number, so the settings window can round-trip it (u64::MAX can't).
+pub const FOREVER: u64 = 9_999_999_999;
+
 pub fn now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
@@ -21,6 +25,17 @@ pub enum DisplayOff {
     OnLidClose,
     WhileAgentsRun,
     AfterFinish,
+}
+
+/// Text beside the tray icon.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub enum TrayLabel {
+    /// "Claude 2 · Codex 1"
+    Full,
+    /// "3"
+    Count,
+    Off,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -48,6 +63,22 @@ pub struct Settings {
     /// Agents without hooks: counted as working while a process with this name runs.
     pub process_agents: Vec<String>,
     pub first_run: u64,
+    /// `agents::HOOKS_VERSION` that connected agents' hooks were last written with.
+    pub hooks_version: u32,
+    pub tray_label: TrayLabel,
+    /// A working session with no events for this long is flagged (0 = never).
+    pub alert_stuck_mins: u32,
+    /// Notify when a session has waited on you this long (0 = right away).
+    pub alert_waiting: bool,
+    pub alert_waiting_mins: u32,
+    /// Notify when a turn at least this long finishes (0 = never).
+    pub alert_long_turn_mins: u32,
+    /// Notify when a turn stops with an error (rate limit, overloaded, …).
+    pub alert_errors: bool,
+    /// Stop counting a session after this long without any event.
+    pub release_quiet_after_mins: u32,
+    /// "Keep awake" from the tray: unix time it ends (0 = off, FOREVER = until turned off).
+    pub manual_until: u64,
 }
 
 impl Default for Settings {
@@ -72,6 +103,15 @@ impl Default for Settings {
             launch_at_login: true,
             process_agents: ["aider", "goose", "cline", "conductor"].map(String::from).to_vec(),
             first_run: 0,
+            hooks_version: 0,
+            tray_label: TrayLabel::Full,
+            alert_stuck_mins: 15,
+            alert_waiting: true,
+            alert_waiting_mins: 1,
+            alert_long_turn_mins: 5,
+            alert_errors: true,
+            release_quiet_after_mins: 120,
+            manual_until: 0,
         }
     }
 }

@@ -70,6 +70,35 @@ pub(crate) fn sound_files(dir: &str, ext: &str) -> Vec<String> {
     v
 }
 
+/// Opens a folder in Finder / Explorer / the file manager.
+pub fn open_path(path: &str) {
+    let opener = if cfg!(target_os = "macos") {
+        "open"
+    } else if cfg!(windows) {
+        "explorer"
+    } else {
+        "xdg-open"
+    };
+    if std::path::Path::new(path).is_dir() {
+        let _ = Command::new(opener).arg(path).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+    }
+}
+
+/// Brings the agent's terminal app to the front (macOS): a bundle id (`com.microsoft.VSCode`)
+/// or an app name. No-op elsewhere.
+#[allow(unused_variables)]
+pub fn activate_app(bundle_or_name: &str) {
+    #[cfg(target_os = "macos")]
+    {
+        let flag = if bundle_or_name.contains('.') { "-b" } else { "-a" };
+        let _ = Command::new("/usr/bin/open")
+            .args([flag, bundle_or_name])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+    }
+}
+
 /// Re-launches this executable as `--watchdog <pid>`, detached. When the app dies for any
 /// reason (even SIGKILL / End task), the watchdog runs `restore()` so a crash can't leave a
 /// machine unable to sleep.

@@ -18,6 +18,8 @@ pub struct Inputs {
     pub enabled: bool,
     pub paused: bool,
     pub working: usize,
+    /// "Keep awake" chosen from the tray: counts as work, the safety limits still apply.
+    pub manual: bool,
     pub thermal: u8,
     pub thermal_limit: u8,
     pub low_power: bool,
@@ -37,7 +39,7 @@ pub fn decide(i: &Inputs) -> Reason {
         Disabled
     } else if i.paused {
         Paused
-    } else if i.working == 0 {
+    } else if i.working == 0 && !i.manual {
         NoAgents
     } else if i.thermal >= i.thermal_limit {
         Thermal
@@ -61,6 +63,7 @@ mod tests {
             enabled: true,
             paused: false,
             working: 1,
+            manual: false,
             thermal: 0,
             thermal_limit: 2,
             low_power: false,
@@ -78,6 +81,9 @@ mod tests {
         assert_eq!(decide(&Inputs { enabled: false, ..base() }), Disabled);
         assert_eq!(decide(&Inputs { paused: true, ..base() }), Paused);
         assert_eq!(decide(&Inputs { working: 0, battery: Some(5), ..base() }), NoAgents);
+        assert_eq!(decide(&Inputs { working: 0, manual: true, ..base() }), Holding);
+        assert_eq!(decide(&Inputs { working: 0, manual: true, battery: Some(5), ..base() }), Battery);
+        assert_eq!(decide(&Inputs { working: 0, manual: true, paused: true, ..base() }), Paused);
         assert_eq!(decide(&Inputs { thermal: 2, ..base() }), Thermal);
         assert_eq!(decide(&Inputs { thermal: 2, thermal_limit: 3, ..base() }), Holding);
         assert_eq!(decide(&Inputs { low_power: true, ..base() }), LowPower);

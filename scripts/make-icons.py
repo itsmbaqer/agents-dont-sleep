@@ -8,6 +8,7 @@ import struct
 import zlib
 
 AMBER = (245, 158, 11)
+RED = (239, 68, 68)
 SLATE = (100, 116, 139)
 WHITE = (255, 255, 255)
 BLACK = (0, 0, 0)
@@ -70,17 +71,39 @@ def render(path, size, pixel, ss=3):
         f.write(chunk(b"IEND", b""))
 
 
-def template(awake):
+def slash(x, y, w=2.6):
+    """Diagonal bar across the glyph, for 'off'."""
+    return abs((x - 4) - (y - 2) * (28 / 30)) * 0.73 < w / 2 and 3 <= x <= 33 and 2 <= y <= 33
+
+
+def badge(x, y, r=6.0):
+    return (x - 29) ** 2 + (y - 7) ** 2 <= r * r
+
+
+def glyph(x, y, look, stroke=2.6):
+    """The laptop plus the state mark: bolt (awake), badge dot (attention), slash (off)."""
+    if look == "attention":
+        if badge(x, y):
+            return True
+        if badge(x, y, 8.4):  # clear ring so the dot reads on top of the frame
+            return False
+    if look == "off" and slash(x, y):
+        return True
+    if look == "off" and slash(x, y, 6.0):  # gap around the slash
+        return False
+    return laptop(x, y, stroke) or (look == "awake" and poly(x, y, BOLT))
+
+
+def template(look):
     """macOS menu bar: black glyph on transparent; the system tints it."""
     def px(u, v):
-        x, y = u * 36, v * 36
-        return (*BLACK, 255) if laptop(x, y) or (awake and poly(x, y, BOLT)) else None
+        return (*BLACK, 255) if glyph(u * 36, v * 36, look) else None
     return px
 
 
-def colored(awake):
+def colored(look):
     """Windows/Linux trays: white glyph on a colored tile, readable on light and dark bars."""
-    tile = AMBER if awake else SLATE
+    tile = {"awake": AMBER, "attention": RED}.get(look, SLATE)
 
     def px(u, v):
         x, y = u * 36, v * 36
@@ -88,8 +111,7 @@ def colored(awake):
             return None
         # Glyph scaled into the tile's padding.
         gx, gy = 4 + (x - 4) * 36 / 28, 5 + (y - 5) * 36 / 28
-        on = laptop(gx, gy, 3.2) or (awake and poly(gx, gy, BOLT))
-        return (*WHITE, 255) if on else (*tile, 255)
+        return (*WHITE, 255) if glyph(gx, gy, look, 3.2) else (*tile, 255)
     return px
 
 
@@ -110,9 +132,8 @@ def app_icon(u, v):
 
 
 if __name__ == "__main__":
-    render("src-tauri/icons/tray-awake.png", 36, template(True))
-    render("src-tauri/icons/tray-idle.png", 36, template(False))
-    render("src-tauri/icons/tray-awake-color.png", 32, colored(True))
-    render("src-tauri/icons/tray-idle-color.png", 32, colored(False))
+    for look in ("idle", "awake", "attention", "off"):
+        render(f"src-tauri/icons/tray-{look}.png", 36, template(look))
+        render(f"src-tauri/icons/tray-{look}-color.png", 32, colored(look))
     render("app-icon.png", 1024, app_icon, ss=2)
     print("icons written")
