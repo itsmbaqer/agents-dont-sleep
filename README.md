@@ -15,7 +15,7 @@ A small tray app that keeps your laptop awake, even with the lid closed and in y
 
 ## Install
 
-Download the latest build from **[Releases](https://github.com/losefor/agents-dont-sleep/releases/latest)**.
+Download the latest build from **[Releases](https://github.com/itsmbaqer/agents-dont-sleep/releases/latest)**.
 
 The builds aren't code-signed yet, so each OS asks you to confirm once.
 

@@ -59,7 +59,7 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: "Agents Don't Sleep ${{ github.ref_name }}"
           releaseBody: |
-            Install steps for each OS are in the [README](https://github.com/losefor/agents-dont-sleep#install).
+            Install steps for each OS are in the [README](https://github.com/itsmbaqer/agents-dont-sleep#install).
 
             These builds are not code-signed yet:
             - **macOS:** on first launch, go to System Settings → Privacy & Security → Open Anyway.
