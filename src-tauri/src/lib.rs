@@ -334,7 +334,31 @@ fn update_tray(app: &AppHandle, s: &Status) {
     if let Ok(img) = Image::from_bytes(icon) {
         let _ = tray.set_icon_with_as_template(Some(img), true);
     }
+    let title = tray_title(&s.sessions, &s.process_agents);
+    let _ = tray.set_title(if title.is_empty() { None } else { Some(title) });
     let _ = tray.set_tooltip(Some(status_line(s, &set)));
+}
+
+/// Text beside the tray icon: active (working or waiting) sessions per agent, e.g.
+/// "Claude 2" or "Claude 2 · Codex 1"; "3 agents · 5" when more would crowd the menu bar.
+fn tray_title(sessions: &[agents::Session], process_agents: &[String]) -> String {
+    let mut groups: Vec<(&str, usize)> = vec![];
+    let names = sessions
+        .iter()
+        .filter(|x| x.active())
+        .map(|x| x.name.split(' ').next().unwrap_or(&x.name)) // "Claude Code" → "Claude"
+        .chain(process_agents.iter().map(String::as_str));
+    for name in names {
+        match groups.iter_mut().find(|(g, _)| *g == name) {
+            Some((_, n)) => *n += 1,
+            None => groups.push((name, 1)),
+        }
+    }
+    match groups.len() {
+        0 => String::new(),
+        1 | 2 => groups.iter().map(|(g, n)| format!("{g} {n}")).collect::<Vec<_>>().join(" · "),
+        k => format!("{k} agents · {}", groups.iter().map(|(_, n)| n).sum::<usize>()),
+    }
 }
 
 fn update_settings(app: &AppHandle, f: impl FnOnce(&mut Settings)) {
@@ -622,4 +646,24 @@ pub fn run() {
         RunEvent::Reopen { .. } => open_settings(app),
         _ => {}
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn session(name: &str, state: &str) -> agents::Session {
+        agents::Session { agent: String::new(), name: name.into(), id: String::new(), state: state.into(), project: String::new() }
+    }
+
+    #[test]
+    fn tray_title_counts_active_sessions() {
+        assert_eq!(tray_title(&[], &[]), "");
+        assert_eq!(tray_title(&[session("Claude Code", "idle")], &[]), "");
+        let two = [session("Claude Code", "working"), session("Claude Code", "waiting"), session("Claude Code", "idle")];
+        assert_eq!(tray_title(&two, &[]), "Claude 2");
+        let mixed = [session("Claude Code", "working"), session("Codex", "working")];
+        assert_eq!(tray_title(&mixed, &[]), "Claude 1 · Codex 1");
+        assert_eq!(tray_title(&mixed, &["aider".into()]), "3 agents · 3");
+    }
 }
