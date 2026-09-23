@@ -1,9 +1,16 @@
 name: release
 
-# Push a tag like v0.1.0 to build every platform into a draft GitHub release.
+# Builds every platform into a draft GitHub release. Runs when the version workflow finishes a
+# Version Packages merge (workflow_call), or when you push a tag like v0.1.0 by hand.
 on:
   push:
     tags: ["v*"]
+  workflow_call:
+    inputs:
+      tag:
+        description: Tag to create and release, e.g. v0.2.0
+        type: string
+        required: true
 
 jobs:
   build:
@@ -21,6 +28,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The pushed tag, or (from the version workflow) the commit being released.
+          ref: ${{ inputs.tag && github.sha || github.ref }}
 
       - name: Linux build deps
         if: runner.os == 'Linux'
@@ -56,15 +66,15 @@ jobs:
           # APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           # APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "Agents Don't Sleep ${{ github.ref_name }}"
+          tagName: ${{ inputs.tag || github.ref_name }}
+          releaseName: "Agents Don't Sleep ${{ inputs.tag || github.ref_name }}"
           releaseBody: |
-            Install steps for each OS are in the [README](https://github.com/itsmbaqer/agents-dont-sleep#install).
+            Install steps for each OS are in the [README](https://github.com/itsmbaqer/agents-dont-sleep#install). What changed: [CHANGELOG](https://github.com/itsmbaqer/agents-dont-sleep/blob/main/CHANGELOG.md).
 
             These builds are not code-signed yet:
             - **macOS:** on first launch, go to System Settings → Privacy & Security → Open Anyway.
             - **Windows:** at the SmartScreen prompt, click More info → Run anyway.
           releaseDraft: true
-          prerelease: ${{ contains(github.ref_name, '-') }}
+          prerelease: ${{ contains(inputs.tag || github.ref_name, '-') }}
           uploadUpdaterJson: false
           args: --target ${{ matrix.target }}

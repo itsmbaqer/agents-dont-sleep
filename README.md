@@ -104,42 +104,30 @@ pnpm tauri build            # installers in src-tauri/target/release/bundle/
 
 ## Releasing
 
-Releases are built by GitHub Actions (`.github/workflows/release.yml`). **Merging to `main` doesn't release anything; only pushing a version tag does.**
+Versioning is automated with [Changesets](https://github.com/changesets/changesets). Nobody edits `version` in `package.json` by hand; Tauri reads the app version from there.
 
-### Step by step
-
-1. **Bump the version** in `package.json`, for example `"version": "0.2.0"`. It's the only place the version lives: Tauri reads it from there (`"version": "../package.json"` in `tauri.conf.json`), and it goes into the installer file names.
-2. **Commit and merge to `main`** through a PR, and wait for the `ci` checks (fmt, clippy and tests on macOS, Windows and Linux) to pass.
-3. **Tag `main` and push the tag.** The tag should match the version:
+1. **Add a changeset to each PR** that changes the app:
    ```sh
-   git checkout main && git pull
-   git tag v0.2.0
-   git push origin v0.2.0
+   pnpm changeset
    ```
-   - A tag with a `-`, like `v0.2.0-rc.1`, is marked as a **pre-release**. Use these to test before a real release.
-4. **Wait for the `release` workflow** (Actions tab, about 20 minutes). It runs 4 jobs in parallel, and each one builds the React UI, the `adshook` sidecar for its target, and the app:
+   Pick `patch` for fixes, `minor` for features or `major` for breaking changes, then write one changelog line. Commit the new `.changeset/*.md` file with the PR. Docs-only and CI-only PRs don't need one.
+2. **Merge to `main`.** The **version** workflow opens (or updates) a **"chore: version packages"** PR. That PR bumps `package.json` from all pending changesets and writes `CHANGELOG.md`, with links to the PRs.
+3. **Merge the version PR.** The version workflow sees the new version and runs the **release** workflow, which builds four installers (macOS Apple silicon and Intel, Windows, Linux) into a **draft** GitHub release tagged `vX.Y.Z`. This takes about 20 minutes.
+4. **Test the installers, then publish the draft** under *Releases*.
 
-   | Job | Output |
-   |---|---|
-   | macOS Apple silicon | `Agents Don't Sleep_<version>_aarch64.dmg` |
-   | macOS Intel | `Agents Don't Sleep_<version>_x64.dmg` |
-   | Windows | `Agents Dont Sleep_<version>_x64-setup.exe` (Windows drops the apostrophe, which breaks the NSIS installer) |
-   | Linux (Ubuntu 22.04, for older glibc) | `.deb`, `.rpm`, `.AppImage` |
+**Pre-releases:** push a tag by hand to build a test release from any commit on `main`. A tag with a `-` in it is marked as a pre-release.
+```sh
+git tag v0.2.0-rc.1 && git push origin v0.2.0-rc.1
+```
 
-5. **Check the draft release.** Every job uploads to one **draft** release named `Agents Don't Sleep vX.Y.Z` under *Releases*, which only maintainers can see. Download the installers and try them on real machines.
-6. **Publish it.** Open the draft, edit the notes if needed, then click **Publish release**. It's now public, and it becomes the target of the repo's `releases/latest` link (pre-releases aren't).
+**If a release job fails:**
+1. Fix it in a PR.
+2. Delete the draft and its tag: `gh release delete vX.Y.Z --cleanup-tag`.
+3. Push the tag again by hand, from the fixed commit.
 
-### If a job fails
-- Fix it on a branch and merge to `main`.
-- Delete the broken draft and its tag: `gh release delete vX.Y.Z --cleanup-tag`
-- Tag again (steps 3–6). Using a new rc number (`-rc.2`) is simplest.
+**CI on the version PR:** GitHub doesn't run workflows on PRs created with the built-in token, so the version PR has no checks and needs an admin merge. To get CI on it, add a fine-grained personal access token as the repository secret `CHANGESETS_TOKEN`, with **Contents** and **Pull requests** set to *read and write* for this repo.
 
-### Code signing (optional, later)
-The builds are unsigned. macOS is ad-hoc signed and Windows is unsigned, which is why users confirm once (see [Install](#install)). To turn on macOS signing and notarization:
-1. Add the `APPLE_*` repository secrets (Developer ID certificate, Apple ID, team ID).
-2. Uncomment the matching lines in `release.yml`.
-
-No code changes are needed.
+**Signing** can be added later with no code changes. Add the `APPLE_*` secrets listed in `.github/workflows/release.yml`.
 
 ## License
 
