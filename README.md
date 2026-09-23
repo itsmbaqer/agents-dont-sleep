@@ -52,6 +52,8 @@ Open **Settings → Agents** and click **Connect** for each agent you use.
 | Hermes | `~/.hermes/config.yaml`, plus a gateway hook | |
 | aider, goose, cline, conductor, … | process detection | Counted as working while the process runs. The list is editable. |
 
+The hooks record activity metadata only: state, tool names, model, timings and counts. Prompts, commands, file contents and tool output are never kept (details in [SECURITY.md](SECURITY.md#privacy)).
+
 Only Claude Code has been tested end to end so far. The other integrations follow each agent's current hook docs. Bug reports are welcome.
 
 ## How it works

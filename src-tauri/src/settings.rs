@@ -48,6 +48,8 @@ pub struct Settings {
     /// Agents without hooks: counted as working while a process with this name runs.
     pub process_agents: Vec<String>,
     pub first_run: u64,
+    /// `agents::HOOKS_VERSION` that connected agents' hooks were last written with.
+    pub hooks_version: u32,
 }
 
 impl Default for Settings {
@@ -72,6 +74,7 @@ impl Default for Settings {
             launch_at_login: true,
             process_agents: ["aider", "goose", "cline", "conductor"].map(String::from).to_vec(),
             first_run: 0,
+            hooks_version: 0,
         }
     }
 }

@@ -40,6 +40,22 @@ export interface Session {
   id: string;
   state: "working" | "waiting" | "idle";
   project: string;
+  cwd: string;
+  /** Current tool name while working ("Bash", "Edit", …). */
+  tool: string;
+  model: string;
+  term: string;
+  started: number;
+  turnSecs: number;
+  lastTurnSecs: number;
+  quietSecs: number;
+  waitingSecs: number;
+  lastEvent: number;
+  tools: number;
+  turns: number;
+  errors: number;
+  /** Why the last turn failed ("rate_limit", …), else "". */
+  errorKind: string;
 }
 
 export interface Platform {

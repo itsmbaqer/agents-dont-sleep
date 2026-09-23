@@ -50,6 +50,13 @@ No root is used.
 
 ## Privacy
 
-- The hook helper parses each hook payload only to pick out the session id and working folder. Nothing else from it (prompts, code, tool output) is kept.
+- The hook helper keeps activity metadata only. Per session it records:
+  - the session id and working folder
+  - the agent's pid and its terminal app (`TERM_PROGRAM`, e.g. `vscode`)
+  - the current event and tool **names** (e.g. `PreToolUse`, `Bash`) and the model name
+  - timestamps
+  - counts of tool calls, turns and errors
+  - the error **kind** when a turn fails (e.g. `rate_limit`)
+- Prompts, commands, file paths inside tool input, file contents and tool output are never kept. Names are only accepted as short identifiers, never free text.
 - Everything it records stays in `~/.agents-dont-sleep/`.
 - The app makes no network requests and has no telemetry.

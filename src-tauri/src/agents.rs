@@ -2,14 +2,14 @@
 //! `src-tauri/hook` sidecar), which drops `sessions/<agent>__<sid>` (lines: state, cwd, agent
 //! pid). The app only polls that folder.
 use crate::settings::{data_dir, home, write_atomic};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     collections::HashSet,
     ffi::OsStr,
     fs,
     path::{Path, PathBuf},
-    time::Duration,
+    time::{Duration, UNIX_EPOCH},
 };
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
@@ -249,21 +249,26 @@ fn program() -> String {
     return quote_posix(&hook_path().to_string_lossy());
 }
 
-fn hook_cmd(agent: &str, state: &str) -> String {
-    format!("{} {agent} {state}", program())
+/// Bump when generated hook entries change; connected agents are rewritten at startup.
+pub const HOOKS_VERSION: u32 = 2;
+
+/// `--event=` is baked in because Copilot and Cursor payloads don't name the event.
+fn hook_cmd(agent: &str, state: &str, event: &str) -> String {
+    format!("{} {agent} {state} --event={event}", program())
 }
 
-fn entry(shape: Shape, agent: &str, state: &str) -> Value {
-    let cmd = hook_cmd(agent, state);
+fn entry(shape: Shape, agent: &str, state: &str, event: &str) -> Value {
+    let cmd = hook_cmd(agent, state, event);
     match shape {
         Shape::Claude => json!({ "hooks": [{
-            "type": "command", "command": hook_path().to_string_lossy(), "args": [agent, state], "timeout": 5 }] }),
+            "type": "command", "command": hook_path().to_string_lossy(),
+            "args": [agent, state, format!("--event={event}")], "timeout": 5 }] }),
         Shape::Nested => json!({ "hooks": [{ "type": "command", "command": cmd, "timeout": 5 }] }),
         Shape::Gemini => json!({ "matcher": "*", "hooks": [{
             "name": "agents-dont-sleep", "type": "command", "command": cmd, "timeout": 5000 }] }),
         Shape::Cursor => json!({ "command": cmd }),
         Shape::Copilot if cfg!(windows) => json!({ "type": "command",
-            "powershell": format!("& '{}' {agent} {state}", hook_path().display()), "timeoutSec": 5 }),
+            "powershell": format!("& '{}' {agent} {state} --event={event}", hook_path().display()), "timeoutSec": 5 }),
         Shape::Copilot => json!({ "type": "command", "bash": cmd, "timeoutSec": 5 }),
     }
 }
@@ -283,7 +288,7 @@ pub fn json_install(v: &mut Value, agent: &str, shape: Shape, events: &[(&str, &
         let list = hooks.entry(*event).or_insert_with(|| json!([]));
         list.as_array_mut()
             .ok_or_else(|| format!("hooks.{event} is not a list; not touching it"))?
-            .push(entry(shape, agent, state));
+            .push(entry(shape, agent, state, event));
     }
     Ok(())
 }
@@ -377,7 +382,7 @@ const END: &str = "# <<< agents-dont-sleep";
 fn hermes_block() -> String {
     let mut s = format!("{BEGIN}\nhooks:\n");
     for (event, state) in HERMES_EVENTS {
-        s += &format!("  {event}:\n    - command: \"{}\"\n      timeout: 5\n", hook_cmd("hermes", state));
+        s += &format!("  {event}:\n    - command: \"{}\"\n      timeout: 5\n", hook_cmd("hermes", state, event));
     }
     s + END
 }
@@ -424,7 +429,7 @@ fn hermes_allowlist(install: bool) -> Result<(), String> {
     list.retain(|x| !ours(&x.to_string()));
     if install {
         for (event, state) in HERMES_EVENTS {
-            list.push(json!({ "event": event, "command": hook_cmd("hermes", state) }));
+            list.push(json!({ "event": event, "command": hook_cmd("hermes", state, event) }));
         }
     }
     write_json(&path, &v)
@@ -536,18 +541,21 @@ fn config_file(a: &Agent) -> PathBuf {
     }
 }
 
-/// Rewrites entries from pre-release installs (which called a `hook.sh` script) to the
-/// `adshook` helper, then removes the script. Runs at startup; a no-op once migrated.
-pub fn migrate_legacy() {
+/// Rewrites connected agents' hook entries when an older app wrote them (`from_version` <
+/// `HOOKS_VERSION`, or the pre-release `hook.sh` script), then removes that script. Runs at
+/// startup; returns false if an agent couldn't be updated, so it's retried next launch.
+pub fn refresh_integrations(from_version: u32) -> bool {
     let mut ok = true;
     for a in AGENTS {
-        if fs::read_to_string(config_file(a)).is_ok_and(|s| s.contains(".agents-dont-sleep/hook.sh")) {
+        let Ok(s) = fs::read_to_string(config_file(a)) else { continue };
+        if s.contains(".agents-dont-sleep/hook.sh") || (from_version < HOOKS_VERSION && ours(&s)) {
             ok &= install(a.id).is_ok();
         }
     }
     if ok {
         let _ = fs::remove_file(data_dir().join("hook.sh"));
     }
+    ok
 }
 
 pub fn statuses() -> Vec<AgentStatus> {
@@ -568,7 +576,41 @@ pub fn statuses() -> Vec<AgentStatus> {
         .collect()
 }
 
-#[derive(Serialize, Clone, PartialEq, Debug)]
+/// The session file written by `adshook` (mirrors `Record` in `src-tauri/hook/src/main.rs`).
+#[derive(Deserialize, Default, Debug, PartialEq)]
+#[serde(default)]
+struct Record {
+    state: String,
+    cwd: String,
+    pid: u32,
+    tool: String,
+    model: String,
+    term: String,
+    started: u64,
+    turn_started: u64,
+    last_turn_secs: u64,
+    waiting_since: u64,
+    last_event: u64,
+    tools: u32,
+    turns: u32,
+    errors: u32,
+    error_kind: String,
+}
+
+/// JSON, or the 3-line format (state, cwd, pid) of helpers from 0.1 pre-releases.
+fn parse_record(body: &str) -> Record {
+    serde_json::from_str(body).unwrap_or_else(|_| {
+        let mut lines = body.lines();
+        Record {
+            state: lines.next().unwrap_or("idle").trim().to_string(),
+            cwd: lines.next().unwrap_or_default().to_string(),
+            pid: lines.next().and_then(|p| p.trim().parse().ok()).unwrap_or(0),
+            ..Default::default()
+        }
+    })
+}
+
+#[derive(Serialize, Clone, PartialEq, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Session {
     pub agent: String,
@@ -577,6 +619,26 @@ pub struct Session {
     /// "working" | "waiting" | "idle"
     pub state: String,
     pub project: String,
+    pub cwd: String,
+    /// Current tool name while working ("Bash", "Edit", …), else empty.
+    pub tool: String,
+    pub model: String,
+    /// TERM_PROGRAM of the agent's terminal ("vscode", "iTerm.app", …).
+    pub term: String,
+    pub started: u64,
+    /// Seconds into the current turn (0 when idle).
+    pub turn_secs: u64,
+    pub last_turn_secs: u64,
+    /// Seconds since the last hook event.
+    pub quiet_secs: u64,
+    /// Seconds spent waiting for the user (0 unless waiting).
+    pub waiting_secs: u64,
+    pub last_event: u64,
+    pub tools: u32,
+    pub turns: u32,
+    pub errors: u32,
+    /// Why the last turn failed (Claude StopFailure kind, e.g. "rate_limit"), else empty.
+    pub error_kind: String,
 }
 
 impl Session {
@@ -617,32 +679,48 @@ pub fn basename(s: &OsStr) -> String {
 
 /// Reads session files, deleting ones whose agent process is gone or that went stale.
 pub fn scan_sessions(running: &Running) -> Vec<Session> {
+    let now = crate::settings::now();
     let dir = data_dir().join("sessions");
     let mut out = vec![];
     for e in fs::read_dir(&dir).into_iter().flatten().flatten() {
         let fname = e.file_name().to_string_lossy().into_owned();
         let Some((agent, id)) = fname.split_once("__") else { continue };
         let Some(def) = AGENTS.iter().find(|a| a.id == agent) else { continue };
-        let stale =
-            e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_none_or(|age| age > STALE);
-        let body = fs::read_to_string(e.path()).unwrap_or_default();
-        let mut lines = body.lines();
-        let state = lines.next().unwrap_or("idle").to_string();
-        let project = lines
-            .next()
-            .and_then(|c| Path::new(c).file_name())
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
+        let r = parse_record(&fs::read_to_string(e.path()).unwrap_or_default());
+        let mtime = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok());
+        let last_event = if r.last_event > 0 { r.last_event } else { mtime.map_or(0, |d| d.as_secs()) };
+        let quiet_secs = now.saturating_sub(last_event);
         // Exact per-session liveness when the hook recorded the agent pid; agent-wide otherwise.
-        let alive = match lines.next().and_then(|p| p.trim().parse::<u32>().ok()).filter(|&p| p > 1) {
+        let alive = match Some(r.pid).filter(|&p| p > 1) {
             Some(pid) => running.pids.contains(&pid),
             None => def.procs.iter().any(|p| running.names.contains(*p)),
         };
-        if stale || !alive {
+        if quiet_secs > STALE.as_secs() || !alive {
             let _ = fs::remove_file(e.path());
             continue;
         }
-        out.push(Session { agent: agent.into(), name: def.name.into(), id: id.into(), state, project });
+        let since = |t: u64| if t > 0 { now.saturating_sub(t) } else { 0 };
+        out.push(Session {
+            agent: agent.into(),
+            name: def.name.into(),
+            id: id.into(),
+            project: Path::new(&r.cwd).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+            turn_secs: since(r.turn_started),
+            waiting_secs: since(r.waiting_since),
+            quiet_secs,
+            last_event,
+            state: r.state,
+            cwd: r.cwd,
+            tool: r.tool,
+            model: r.model,
+            term: r.term,
+            started: r.started,
+            last_turn_secs: r.last_turn_secs,
+            tools: r.tools,
+            turns: r.turns,
+            errors: r.errors,
+            error_kind: r.error_kind,
+        });
     }
     out.sort_by(|a, b| (&a.agent, &a.id).cmp(&(&b.agent, &b.id)));
     out
@@ -683,7 +761,7 @@ mod tests {
         json_install(&mut v, "claude", Shape::Claude, claude_events()).unwrap(); // idempotent
         let s = v.to_string();
         assert_eq!(s.matches("adshook").count(), claude_events().len());
-        assert_eq!(v["hooks"]["Stop"][1]["hooks"][0]["args"], json!(["claude", "idle"])); // exec form
+        assert_eq!(v["hooks"]["Stop"][1]["hooks"][0]["args"], json!(["claude", "idle", "--event=Stop"])); // exec form
         assert!(s.contains("echo hi") && s.contains("journal.sh") && s.contains("Bash(ls:*)"));
         assert_eq!(v["hooks"]["Stop"].as_array().unwrap().len(), 2);
         json_uninstall(&mut v);
@@ -699,7 +777,7 @@ mod tests {
         json_install(&mut v, "cursor", Shape::Cursor, &[("stop", "idle")]).unwrap();
         assert_eq!(v["version"], 1);
         let cmd = v["hooks"]["stop"][0]["command"].as_str().unwrap();
-        assert!(ours(cmd) && cmd.ends_with(" cursor idle"), "{cmd}"); // adshook(.exe) cursor idle
+        assert!(ours(cmd) && cmd.ends_with(" cursor idle --event=stop"), "{cmd}"); // adshook(.exe) cursor idle …
         json_uninstall(&mut v);
         assert_eq!(v, json!({ "version": 1 }));
     }
@@ -772,7 +850,7 @@ mod tests {
             "type": "command", "command": format!("{}/.agents-dont-sleep/hook.sh claude idle", home.display()) }] }));
         fs::write(home.join(".claude/settings.json"), legacy.to_string()).unwrap();
         fs::write(data_dir().join("hook.sh"), "#!/bin/sh\n").unwrap();
-        migrate_legacy();
+        assert!(refresh_integrations(HOOKS_VERSION));
         let migrated = fs::read_to_string(home.join(".claude/settings.json")).unwrap();
         assert!(!migrated.contains("hook.sh") && migrated.contains("adshook"), "{migrated}");
         assert!(!data_dir().join("hook.sh").exists());
@@ -799,6 +877,17 @@ mod tests {
             .unwrap()
             .contains("__HOOK__"));
 
+        // Entries written by an older app (no --event) are rewritten on a version bump.
+        let old = json!({ "hooks": { "Stop": [{ "hooks": [{ "type": "command",
+            "command": hook_path().to_string_lossy(), "args": ["claude", "idle"] }] }] } });
+        fs::write(home.join(".claude/settings.json"), old.to_string()).unwrap();
+        assert!(refresh_integrations(HOOKS_VERSION - 1));
+        let refreshed = fs::read_to_string(home.join(".claude/settings.json")).unwrap();
+        assert!(refreshed.contains("--event=Stop") && refreshed.contains("--event=PreToolUse"), "{refreshed}");
+        assert_eq!(refreshed.matches("adshook").count(), claude_events().len());
+        fs::write(home.join(".claude/settings.json"), EXISTING).unwrap();
+        install("claude").unwrap();
+
         if std::env::var("ADS_KEEP").is_ok() {
             println!("kept installed files in {}", home.display());
             return;
@@ -814,6 +903,17 @@ mod tests {
         assert!(!home.join(".copilot/hooks/agents-dont-sleep.json").exists());
         assert!(!home.join(".hermes/hooks/agents-dont-sleep").exists());
         let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn session_records() {
+        let _g = home_lock();
+        let json = r#"{"state":"working","cwd":"/w/api","pid":9,"tool":"Bash","tools":4,"turns":1,"turn_started":100,"last_event":150}"#;
+        let r = parse_record(json);
+        assert_eq!((r.state.as_str(), r.tool.as_str(), r.pid, r.tools, r.turn_started), ("working", "Bash", 9, 4, 100));
+        let legacy = parse_record("waiting\n/w/web\n77\n");
+        assert_eq!((legacy.state.as_str(), legacy.cwd.as_str(), legacy.pid), ("waiting", "/w/web", 77));
+        assert_eq!(parse_record("").state, "idle");
     }
 
     #[test]

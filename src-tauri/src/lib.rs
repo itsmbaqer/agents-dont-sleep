@@ -576,8 +576,6 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
-            let _ = agents::install_hook_binary();
-            agents::migrate_legacy();
             power::restore(); // clear anything a crash or reboot left behind
             power::init();
             power::spawn_watchdog();
@@ -587,8 +585,12 @@ pub fn run() {
             let first_launch = s.first_run == 0;
             if first_launch {
                 s.first_run = now();
-                let _ = settings::save(&s);
             }
+            let _ = agents::install_hook_binary();
+            if agents::refresh_integrations(s.hooks_version) {
+                s.hooks_version = agents::HOOKS_VERSION;
+            }
+            let _ = settings::save(&s);
             let shortcut = s.shortcut.clone();
             let autostart = s.launch_at_login;
             app.manage(AppState {
@@ -652,13 +654,7 @@ mod tests {
     use super::*;
 
     fn session(name: &str, state: &str) -> agents::Session {
-        agents::Session {
-            agent: String::new(),
-            name: name.into(),
-            id: String::new(),
-            state: state.into(),
-            project: String::new(),
-        }
+        agents::Session { name: name.into(), state: state.into(), ..Default::default() }
     }
 
     #[test]
