@@ -1,5 +1,6 @@
-//! Agent integrations. Every hook/plugin calls `hook.sh <agent> <state> [sid] [cwd]`, which
-//! drops `sessions/<agent>__<sid>` (lines: state, cwd, agent pid). The app only polls that folder.
+//! Agent integrations. Every hook/plugin calls `adshook <agent> <state> [sid] [cwd]` (the
+//! `src-tauri/hook` sidecar), which drops `sessions/<agent>__<sid>` (lines: state, cwd, agent
+//! pid). The app only polls that folder.
 use crate::settings::{data_dir, home, write_atomic};
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -12,14 +13,22 @@ use std::{
 };
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
-/// Every entry we write contains this, so uninstall only ever touches our own lines.
-pub const MARKER: &str = ".agents-dont-sleep/hook.sh";
+/// Every entry we write names the helper, so uninstall only ever touches our own lines. The
+/// name is 8.3-safe so it survives Windows short paths; `hook.sh` covers 0.1 pre-release installs.
+const MARKERS: [&str; 2] = ["adshook", ".agents-dont-sleep/hook.sh"];
+
+pub fn ours(s: &str) -> bool {
+    let s = s.to_lowercase();
+    MARKERS.iter().any(|m| s.contains(m))
+}
 /// ponytail: fixed cap on sessions with no events (crashed agent, very long silent tool).
 const STALE: Duration = Duration::from_secs(2 * 3600);
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Shape {
-    /// Claude Code / Codex: `hooks.<Event>: [{hooks: [{type, command}]}]`
+    /// Claude Code: nested, exec form (`command` + `args`, no shell, no quoting).
+    Claude,
+    /// Codex: `hooks.<Event>: [{hooks: [{type, command}]}]`
     Nested,
     /// Gemini CLI: same plus `matcher: "*"`, timeout in ms.
     Gemini,
@@ -64,7 +73,7 @@ pub const AGENTS: &[Agent] = &[
         procs: &["claude"],
         kind: Kind::Json {
             file: ".claude/settings.json",
-            shape: Shape::Nested,
+            shape: Shape::Claude,
             events: &[
                 ("SessionStart", "idle"),
                 ("UserPromptSubmit", "working"),
@@ -195,28 +204,66 @@ pub const AGENTS: &[Agent] = &[
 ];
 
 pub fn hook_path() -> PathBuf {
-    data_dir().join("hook.sh")
+    data_dir().join("bin").join(if cfg!(windows) { "adshook.exe" } else { "adshook" })
 }
 
-/// Written on every launch so hook updates ship with app updates.
-pub fn install_hook_script() -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    let p = hook_path();
-    write_atomic(&p, include_str!("../resources/hook.sh").as_bytes())?;
-    fs::set_permissions(&p, fs::Permissions::from_mode(0o755))?;
-    fs::create_dir_all(data_dir().join("sessions"))
+/// Copies the bundled `adshook` sidecar (installed next to our executable) to a stable path
+/// that survives app moves and uninstalls, on every launch so updates ship with the app. Written
+/// as fresh bytes, so macOS quarantine flags aren't copied along. A copy that fails because a
+/// hook is running right now is retried next launch.
+pub fn install_hook_binary() -> std::io::Result<()> {
+    fs::create_dir_all(data_dir().join("sessions"))?;
+    let dest = hook_path();
+    let src = std::env::current_exe()?.with_file_name(dest.file_name().unwrap_or_default());
+    let bytes = fs::read(src)?;
+    if fs::read(&dest).is_ok_and(|cur| cur == bytes) {
+        return Ok(());
+    }
+    write_atomic(&dest, &bytes)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&dest, fs::Permissions::from_mode(0o755))?;
+    }
+    Ok(())
+}
+
+/// POSIX-shell quoting, only when needed (sh and Hermes' shlex both accept it).
+#[cfg_attr(windows, allow(dead_code))]
+pub fn quote_posix(p: &str) -> String {
+    if !p.is_empty() && p.chars().all(|c| c.is_ascii_alphanumeric() || "/._-+~".contains(c)) {
+        p.to_string()
+    } else {
+        format!("'{}'", p.replace('\'', r"'\''"))
+    }
+}
+
+/// The helper as a shell word. Windows: the 8.3 short path, because cmd.exe (Codex) breaks on
+/// a quoted program path and PowerShell (Gemini) needs `&` for one.
+/// ponytail: if 8.3 names are disabled and the profile path has spaces, shell-string hooks
+/// (Codex/Gemini/Cursor) break on Windows; Claude/Copilot/plugins are unaffected.
+fn program() -> String {
+    #[cfg(windows)]
+    return crate::power::short_path(&hook_path());
+    #[cfg(not(windows))]
+    return quote_posix(&hook_path().to_string_lossy());
 }
 
 fn hook_cmd(agent: &str, state: &str) -> String {
-    format!("{} {agent} {state}", hook_path().display())
+    format!("{} {agent} {state}", program())
 }
 
-fn entry(shape: Shape, cmd: String) -> Value {
+fn entry(shape: Shape, agent: &str, state: &str) -> Value {
+    let cmd = hook_cmd(agent, state);
     match shape {
+        Shape::Claude => json!({ "hooks": [{
+            "type": "command", "command": hook_path().to_string_lossy(), "args": [agent, state], "timeout": 5 }] }),
         Shape::Nested => json!({ "hooks": [{ "type": "command", "command": cmd, "timeout": 5 }] }),
         Shape::Gemini => json!({ "matcher": "*", "hooks": [{
             "name": "agents-dont-sleep", "type": "command", "command": cmd, "timeout": 5000 }] }),
         Shape::Cursor => json!({ "command": cmd }),
+        Shape::Copilot if cfg!(windows) => json!({ "type": "command",
+            "powershell": format!("& '{}' {agent} {state}", hook_path().display()), "timeoutSec": 5 }),
         Shape::Copilot => json!({ "type": "command", "bash": cmd, "timeoutSec": 5 }),
     }
 }
@@ -236,7 +283,7 @@ pub fn json_install(v: &mut Value, agent: &str, shape: Shape, events: &[(&str, &
         let list = hooks.entry(*event).or_insert_with(|| json!([]));
         list.as_array_mut()
             .ok_or_else(|| format!("hooks.{event} is not a list; not touching it"))?
-            .push(entry(shape, hook_cmd(agent, state)));
+            .push(entry(shape, agent, state));
     }
     Ok(())
 }
@@ -249,7 +296,7 @@ pub fn json_uninstall(v: &mut Value) {
     for (event, list) in hooks.iter_mut() {
         if let Some(a) = list.as_array_mut() {
             let before = a.len();
-            a.retain(|x| !x.to_string().contains(MARKER));
+            a.retain(|x| !ours(&x.to_string()));
             if a.len() != before && a.is_empty() {
                 emptied.push(event.clone());
             }
@@ -267,8 +314,9 @@ fn read_json(path: &Path) -> Result<Value, String> {
     match fs::read_to_string(path) {
         Err(_) => Ok(json!({})),
         Ok(s) if s.trim().is_empty() => Ok(json!({})),
-        Ok(s) => serde_json::from_str(&s)
-            .map_err(|e| format!("{} isn't plain JSON ({e}); not touching it", path.display())),
+        Ok(s) => {
+            serde_json::from_str(&s).map_err(|e| format!("{} isn't plain JSON ({e}); not touching it", path.display()))
+        }
     }
 }
 
@@ -347,7 +395,11 @@ pub fn hermes_strip(yaml: &str) -> String {
         }
     }
     let s = out.join("\n");
-    if s.trim().is_empty() { String::new() } else { s.trim_end().to_string() + "\n" }
+    if s.trim().is_empty() {
+        String::new()
+    } else {
+        s.trim_end().to_string() + "\n"
+    }
 }
 
 /// Appends a managed `hooks:` block. If the user already has their own `hooks:` key we refuse
@@ -369,7 +421,7 @@ fn hermes_allowlist(install: bool) -> Result<(), String> {
     let obj = v.as_object_mut().ok_or("allowlist is not a JSON object")?;
     let list = obj.entry("approvals").or_insert_with(|| json!([]));
     let list = list.as_array_mut().ok_or("allowlist approvals is not a list")?;
-    list.retain(|x| !x.to_string().contains(MARKER));
+    list.retain(|x| !ours(&x.to_string()));
     if install {
         for (event, state) in HERMES_EVENTS {
             list.push(json!({ "event": event, "command": hook_cmd("hermes", state) }));
@@ -378,8 +430,10 @@ fn hermes_allowlist(install: bool) -> Result<(), String> {
     write_json(&path, &v)
 }
 
+/// Templates contain `__HOOK__` where a string literal goes; a JSON string is valid in JS, TS
+/// and Python and keeps Windows backslashes intact.
 fn fill(template: &str) -> String {
-    template.replace("__HOOK__", &hook_path().to_string_lossy())
+    template.replace("__HOOK__", &json!(hook_path().to_string_lossy()).to_string())
 }
 
 fn find(id: &str) -> Result<&'static Agent, String> {
@@ -388,7 +442,10 @@ fn find(id: &str) -> Result<&'static Agent, String> {
 
 pub fn install(id: &str) -> Result<(), String> {
     let a = find(id)?;
-    install_hook_script().map_err(|e| e.to_string())?;
+    let _ = install_hook_binary();
+    if !hook_path().exists() {
+        return Err("The hook helper is missing. Reinstall Agents Don't Sleep.".into());
+    }
     let h = home();
     match &a.kind {
         Kind::Json { file, shape, events } => {
@@ -404,7 +461,9 @@ pub fn install(id: &str) -> Result<(), String> {
             }
             Ok(())
         }
-        Kind::Owned { file, template } => write_atomic(&h.join(file), fill(template).as_bytes()).map_err(|e| e.to_string()),
+        Kind::Owned { file, template } => {
+            write_atomic(&h.join(file), fill(template).as_bytes()).map_err(|e| e.to_string())
+        }
         Kind::Hermes => {
             let cfg = h.join(".hermes/config.yaml");
             let new = hermes_install_yaml(&fs::read_to_string(&cfg).unwrap_or_default())?;
@@ -412,7 +471,12 @@ pub fn install(id: &str) -> Result<(), String> {
             hermes_allowlist(true)?;
             let dir = h.join(".hermes/hooks/agents-dont-sleep");
             write_atomic(&dir.join("HOOK.yaml"), include_str!("../resources/hermes-HOOK.yaml").as_bytes())
-                .and_then(|_| write_atomic(&dir.join("handler.py"), fill(include_str!("../resources/hermes-handler.py")).as_bytes()))
+                .and_then(|_| {
+                    write_atomic(
+                        &dir.join("handler.py"),
+                        fill(include_str!("../resources/hermes-handler.py")).as_bytes(),
+                    )
+                })
                 .map_err(|e| e.to_string())
         }
     }
@@ -464,16 +528,34 @@ pub struct AgentStatus {
     pub note: &'static str,
 }
 
+/// The file whose content tells whether `a` is connected.
+fn config_file(a: &Agent) -> PathBuf {
+    match &a.kind {
+        Kind::Json { file, .. } | Kind::Owned { file, .. } => home().join(file),
+        Kind::Hermes => home().join(".hermes/config.yaml"),
+    }
+}
+
+/// Rewrites entries from pre-release installs (which called a `hook.sh` script) to the
+/// `adshook` helper, then removes the script. Runs at startup; a no-op once migrated.
+pub fn migrate_legacy() {
+    let mut ok = true;
+    for a in AGENTS {
+        if fs::read_to_string(config_file(a)).is_ok_and(|s| s.contains(".agents-dont-sleep/hook.sh")) {
+            ok &= install(a.id).is_ok();
+        }
+    }
+    if ok {
+        let _ = fs::remove_file(data_dir().join("hook.sh"));
+    }
+}
+
 pub fn statuses() -> Vec<AgentStatus> {
     let h = home();
     AGENTS
         .iter()
         .map(|a| {
-            let file = match &a.kind {
-                Kind::Json { file, .. } | Kind::Owned { file, .. } => h.join(file),
-                Kind::Hermes => h.join(".hermes/config.yaml"),
-            };
-            let installed = fs::read_to_string(&file).is_ok_and(|s| s.contains(MARKER));
+            let installed = fs::read_to_string(config_file(a)).is_ok_and(|s| ours(&s));
             let state = if installed {
                 "installed"
             } else if h.join(a.dir).exists() {
@@ -504,49 +586,57 @@ impl Session {
     }
 }
 
-/// Lowercased basenames of every process name plus argv[0..2], so `node …/gemini` → "gemini".
-pub fn running_names(sys: &mut System) -> HashSet<String> {
+pub struct Running {
+    /// Lowercased basenames of every process name plus argv[0..2], so `node …/gemini` → "gemini".
+    pub names: HashSet<String>,
+    pub pids: HashSet<u32>,
+}
+
+pub fn running(sys: &mut System) -> Running {
     sys.refresh_processes_specifics(
         ProcessesToUpdate::All,
         true,
         ProcessRefreshKind::nothing().with_cmd(UpdateKind::OnlyIfNotSet),
     );
-    let mut set = HashSet::new();
-    for p in sys.processes().values() {
-        set.insert(basename(p.name()));
+    let mut r = Running { names: HashSet::new(), pids: HashSet::new() };
+    for (pid, p) in sys.processes() {
+        r.pids.insert(pid.as_u32());
+        r.names.insert(basename(p.name()));
         for arg in p.cmd().iter().take(2) {
-            set.insert(basename(arg));
+            r.names.insert(basename(arg));
         }
     }
-    set
-}
-
-fn pid_alive(pid: i32) -> bool {
-    // EPERM still means "exists".
-    unsafe { libc::kill(pid, 0) == 0 || *libc::__error() == libc::EPERM }
+    r
 }
 
 pub fn basename(s: &OsStr) -> String {
-    Path::new(s).file_name().unwrap_or(s).to_string_lossy().to_lowercase()
+    let b = s.to_string_lossy();
+    let b = b.rsplit(['/', '\\']).next().unwrap_or(&b).to_lowercase();
+    b.strip_suffix(".exe").map(String::from).unwrap_or(b)
 }
 
 /// Reads session files, deleting ones whose agent process is gone or that went stale.
-pub fn scan_sessions(running: &HashSet<String>) -> Vec<Session> {
+pub fn scan_sessions(running: &Running) -> Vec<Session> {
     let dir = data_dir().join("sessions");
     let mut out = vec![];
     for e in fs::read_dir(&dir).into_iter().flatten().flatten() {
         let fname = e.file_name().to_string_lossy().into_owned();
         let Some((agent, id)) = fname.split_once("__") else { continue };
         let Some(def) = AGENTS.iter().find(|a| a.id == agent) else { continue };
-        let stale = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_none_or(|age| age > STALE);
+        let stale =
+            e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_none_or(|age| age > STALE);
         let body = fs::read_to_string(e.path()).unwrap_or_default();
         let mut lines = body.lines();
         let state = lines.next().unwrap_or("idle").to_string();
-        let project = lines.next().and_then(|c| Path::new(c).file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let project = lines
+            .next()
+            .and_then(|c| Path::new(c).file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
         // Exact per-session liveness when the hook recorded the agent pid; agent-wide otherwise.
-        let alive = match lines.next().and_then(|p| p.trim().parse::<i32>().ok()).filter(|&p| p > 1) {
-            Some(pid) => pid_alive(pid),
-            None => def.procs.iter().any(|p| running.contains(*p)),
+        let alive = match lines.next().and_then(|p| p.trim().parse::<u32>().ok()).filter(|&p| p > 1) {
+            Some(pid) => running.pids.contains(&pid),
+            None => def.procs.iter().any(|p| running.names.contains(*p)),
         };
         if stale || !alive {
             let _ = fs::remove_file(e.path());
@@ -589,10 +679,11 @@ mod tests {
         let _g = home_lock();
         let original: Value = serde_json::from_str(EXISTING).unwrap();
         let mut v = original.clone();
-        json_install(&mut v, "claude", Shape::Nested, claude_events()).unwrap();
-        json_install(&mut v, "claude", Shape::Nested, claude_events()).unwrap(); // idempotent
+        json_install(&mut v, "claude", Shape::Claude, claude_events()).unwrap();
+        json_install(&mut v, "claude", Shape::Claude, claude_events()).unwrap(); // idempotent
         let s = v.to_string();
-        assert_eq!(s.matches(MARKER).count(), claude_events().len());
+        assert_eq!(s.matches("adshook").count(), claude_events().len());
+        assert_eq!(v["hooks"]["Stop"][1]["hooks"][0]["args"], json!(["claude", "idle"])); // exec form
         assert!(s.contains("echo hi") && s.contains("journal.sh") && s.contains("Bash(ls:*)"));
         assert_eq!(v["hooks"]["Stop"].as_array().unwrap().len(), 2);
         json_uninstall(&mut v);
@@ -607,7 +698,8 @@ mod tests {
         let mut v = json!({});
         json_install(&mut v, "cursor", Shape::Cursor, &[("stop", "idle")]).unwrap();
         assert_eq!(v["version"], 1);
-        assert!(v["hooks"]["stop"][0]["command"].as_str().unwrap().ends_with("hook.sh cursor idle"));
+        let cmd = v["hooks"]["stop"][0]["command"].as_str().unwrap();
+        assert!(ours(cmd) && cmd.ends_with(" cursor idle"), "{cmd}"); // adshook(.exe) cursor idle
         json_uninstall(&mut v);
         assert_eq!(v, json!({ "version": 1 }));
     }
@@ -641,7 +733,7 @@ mod tests {
         let _g = home_lock();
         let user = "model: hermes-4\n# my comment\n";
         let installed = hermes_install_yaml(user).unwrap();
-        assert!(installed.starts_with(user) && installed.contains("pre_llm_call:") && installed.contains(MARKER));
+        assert!(installed.starts_with(user) && installed.contains("pre_llm_call:") && ours(&installed));
         assert_eq!(hermes_install_yaml(&installed).unwrap(), installed); // idempotent
         assert_eq!(hermes_strip(&installed), user);
         assert!(hermes_install_yaml("hooks:\n  x: []\n").is_err());
@@ -655,33 +747,57 @@ mod tests {
         let _g = home_lock();
         let home = std::env::temp_dir().join(format!("ads-home-{}", std::process::id()));
         let _ = fs::remove_dir_all(&home);
-        let real_home = std::env::var_os("HOME");
-        std::env::set_var("HOME", &home);
-        struct Restore(Option<std::ffi::OsString>);
+        // home_dir() reads HOME on unix and USERPROFILE on Windows.
+        let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+        let real_home = std::env::var_os(var);
+        std::env::set_var(var, &home);
+        struct Restore(&'static str, Option<std::ffi::OsString>);
         impl Drop for Restore {
             fn drop(&mut self) {
-                if let Some(h) = self.0.take() {
-                    std::env::set_var("HOME", h);
+                if let Some(h) = self.1.take() {
+                    std::env::set_var(self.0, h);
                 }
             }
         }
-        let _restore = Restore(real_home);
+        let _restore = Restore(var, real_home);
+        // The sidecar isn't next to the test binary; stand in for it.
+        fs::create_dir_all(hook_path().parent().unwrap()).unwrap();
+        fs::write(hook_path(), b"stub").unwrap();
         for a in AGENTS {
             fs::create_dir_all(home.join(a.dir)).unwrap();
         }
-        fs::write(home.join(".claude/settings.json"), EXISTING).unwrap();
+        // A pre-release (hook.sh) entry alongside the user's own hooks: migrated, then removed.
+        let mut legacy: Value = serde_json::from_str(EXISTING).unwrap();
+        legacy["hooks"]["Stop"].as_array_mut().unwrap().push(json!({ "hooks": [{
+            "type": "command", "command": format!("{}/.agents-dont-sleep/hook.sh claude idle", home.display()) }] }));
+        fs::write(home.join(".claude/settings.json"), legacy.to_string()).unwrap();
+        fs::write(data_dir().join("hook.sh"), "#!/bin/sh\n").unwrap();
+        migrate_legacy();
+        let migrated = fs::read_to_string(home.join(".claude/settings.json")).unwrap();
+        assert!(!migrated.contains("hook.sh") && migrated.contains("adshook"), "{migrated}");
+        assert!(!data_dir().join("hook.sh").exists());
         fs::write(home.join(".codex/config.toml"), "model = \"o5\"\n").unwrap();
         fs::write(home.join(".hermes/config.yaml"), "model: hermes-4\n").unwrap();
 
         for a in AGENTS {
             install(a.id).unwrap_or_else(|e| panic!("{}: {e}", a.id));
         }
-        assert!(statuses().iter().all(|s| s.state == "installed"), "{:?}", statuses().iter().map(|s| (s.id, s.state)).collect::<Vec<_>>());
+        assert!(
+            statuses().iter().all(|s| s.state == "installed"),
+            "{:?}",
+            statuses().iter().map(|s| (s.id, s.state)).collect::<Vec<_>>()
+        );
         assert!(fs::read_to_string(home.join(".codex/config.toml")).unwrap().contains("[features]\nhooks = true"));
-        let allow: Value = serde_json::from_str(&fs::read_to_string(home.join(".hermes/shell-hooks-allowlist.json")).unwrap()).unwrap();
+        let allow: Value =
+            serde_json::from_str(&fs::read_to_string(home.join(".hermes/shell-hooks-allowlist.json")).unwrap())
+                .unwrap();
         assert_eq!(allow["approvals"].as_array().unwrap().len(), HERMES_EVENTS.len());
-        assert!(fs::read_to_string(home.join(".hermes/hooks/agents-dont-sleep/handler.py")).unwrap().contains(&*hook_path().to_string_lossy()));
-        assert!(!fs::read_to_string(home.join(".config/opencode/plugins/agents-dont-sleep.js")).unwrap().contains("__HOOK__"));
+        assert!(fs::read_to_string(home.join(".hermes/hooks/agents-dont-sleep/handler.py"))
+            .unwrap()
+            .contains(&json!(hook_path().to_string_lossy()).to_string()));
+        assert!(!fs::read_to_string(home.join(".config/opencode/plugins/agents-dont-sleep.js"))
+            .unwrap()
+            .contains("__HOOK__"));
 
         if std::env::var("ADS_KEEP").is_ok() {
             println!("kept installed files in {}", home.display());
@@ -691,7 +807,8 @@ mod tests {
             uninstall(a.id).unwrap();
         }
         assert!(statuses().iter().all(|s| s.state == "available"));
-        let claude: Value = serde_json::from_str(&fs::read_to_string(home.join(".claude/settings.json")).unwrap()).unwrap();
+        let claude: Value =
+            serde_json::from_str(&fs::read_to_string(home.join(".claude/settings.json")).unwrap()).unwrap();
         assert_eq!(claude, serde_json::from_str::<Value>(EXISTING).unwrap());
         assert_eq!(fs::read_to_string(home.join(".hermes/config.yaml")).unwrap(), "model: hermes-4\n");
         assert!(!home.join(".copilot/hooks/agents-dont-sleep.json").exists());
@@ -700,9 +817,19 @@ mod tests {
     }
 
     #[test]
+    fn posix_quoting() {
+        let _g = home_lock();
+        assert_eq!(quote_posix("/Users/me/.agents-dont-sleep/bin/adshook"), "/Users/me/.agents-dont-sleep/bin/adshook");
+        assert_eq!(quote_posix("/home/John Smith/x"), "'/home/John Smith/x'");
+        assert_eq!(quote_posix("/home/o'neil/x"), r"'/home/o'\''neil/x'");
+    }
+
+    #[test]
     fn process_basenames() {
         let _g = home_lock();
         assert_eq!(basename(OsStr::new("/opt/homebrew/bin/gemini")), "gemini");
         assert_eq!(basename(OsStr::new("Cursor")), "cursor");
+        assert_eq!(basename(OsStr::new("C:\\Program Files\\nodejs\\node.exe")), "node");
+        assert_eq!(basename(OsStr::new("claude.exe")), "claude");
     }
 }

@@ -1,7 +1,7 @@
 # Agents Don't Sleep: forwards Hermes gateway events to hook.sh. Safe to delete.
 import subprocess
 
-HOOK = "__HOOK__"
+HOOK = __HOOK__
 STATES = {
     "agent:start": "working",
     "agent:step": "working",

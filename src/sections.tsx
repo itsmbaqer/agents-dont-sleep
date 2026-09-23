@@ -1,7 +1,7 @@
 import { useEffect, useState, type KeyboardEvent } from "react";
 import { Play } from "lucide-react";
 import { Group, Row, useApp } from "@/App";
-import { api, prettyShortcut, type AgentStatus, type DisplayOff } from "@/lib/api";
+import { api, deviceName, prettyShortcut, type AgentStatus, type DisplayOff } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,11 +13,13 @@ import { Switch } from "@/components/ui/switch";
 
 export function GeneralSection() {
   const { settings, status, update, run } = useApp();
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  const os = status?.platform.os;
   const lidProof = status?.lidProof ?? false;
   return (
     <>
       <Group>
-        <Row title="Keep my Mac awake while agents work" hint={`Toggle from anywhere with ${prettyShortcut(settings.shortcut)}.`}>
+        <Row title={`Keep my ${deviceName(os)} awake while agents work`} hint={`Toggle from anywhere with ${prettyShortcut(settings.shortcut, os)}.`}>
           <Switch checked={settings.enabled} onCheckedChange={(enabled) => update({ enabled })} aria-label="Enabled" />
         </Row>
         {settings.pausedUntil * 1000 > Date.now() && (
@@ -27,42 +29,61 @@ export function GeneralSection() {
             </Button>
           </Row>
         )}
-        <Row title="Toggle shortcut" hint="Click, then press the new key combination.">
-          <ShortcutInput value={settings.shortcut} onChange={(shortcut) => update({ shortcut })} />
+        <Row title="Toggle shortcut" hint={os === "linux" ? "Click, then press the new key combination. Global shortcuts don't work on Wayland." : "Click, then press the new key combination."}>
+          <ShortcutInput value={settings.shortcut} os={os} onChange={(shortcut) => update({ shortcut })} />
         </Row>
         <Row title="Launch at login" hint="Also makes sure a crash or restart never leaves sleep disabled.">
           <Switch checked={settings.launchAtLogin} onCheckedChange={(launchAtLogin) => update({ launchAtLogin })} aria-label="Launch at login" />
         </Row>
       </Group>
 
-      <Group
-        title="Lid-closed awake"
-        footer="macOS always sleeps when the lid closes. Staying awake takes the system SleepDisabled switch (pmset disablesleep), which needs admin rights once. The rule allows exactly that command and nothing else, and is only switched on while an agent is working."
-      >
-        <Row
-          title={
-            <span className="flex items-center gap-2">
-              Permission {lidProof ? <Badge>Granted</Badge> : <Badge variant="outline">Not granted</Badge>}
-            </span>
-          }
-          hint={lidProof ? "Your Mac keeps working with the lid shut." : "Without it, agents are only covered while the lid is open."}
+      {status?.platform.needsGrant && (
+        <Group
+          title="Lid-closed awake"
+          footer="macOS always sleeps when the lid closes. Staying awake takes the system SleepDisabled switch (pmset disablesleep), which needs admin rights once. The rule allows exactly that command and nothing else, and is only switched on while an agent is working."
         >
-          {lidProof ? (
-            <Button variant="outline" size="sm" onClick={() => run(api.uninstallSudoers(), "Permission removed.")}>
-              Revoke
-            </Button>
-          ) : (
-            <Button size="sm" onClick={() => run(api.installSudoers(), "Lid-closed awake is ready.")}>
-              Grant…
-            </Button>
-          )}
+          <Row
+            title={
+              <span className="flex items-center gap-2">
+                Permission {lidProof ? <Badge>Granted</Badge> : <Badge variant="outline">Not granted</Badge>}
+              </span>
+            }
+            hint={lidProof ? "Your Mac keeps working with the lid shut." : "Without it, agents are only covered while the lid is open."}
+          >
+            {lidProof ? (
+              <Button variant="outline" size="sm" onClick={() => run(api.uninstallGrant(), "Permission removed.")}>
+                Revoke
+              </Button>
+            ) : (
+              <Button size="sm" onClick={() => run(api.installGrant(), "Lid-closed awake is ready.")}>
+                Grant…
+              </Button>
+            )}
+          </Row>
+        </Group>
+      )}
+
+      <Group title="Uninstall" footer="Run this before deleting the app: it disconnects every agent so their configs are left exactly as they were.">
+        <Row title="Remove all integrations" hint={os === "macos" ? "Then revoke the lid-closed permission above." : undefined}>
+          <Button
+            variant={confirmRemove ? "destructive" : "outline"}
+            size="sm"
+            onBlur={() => setConfirmRemove(false)}
+            onClick={async () => {
+              if (!confirmRemove) return setConfirmRemove(true);
+              setConfirmRemove(false);
+              await run(api.removeAllIntegrations(), "All agents disconnected.");
+            }}
+          >
+            {confirmRemove ? "Click again to confirm" : "Remove all"}
+          </Button>
         </Row>
       </Group>
     </>
   );
 }
 
-function ShortcutInput({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+function ShortcutInput({ value, os, onChange }: { value: string; os?: "macos" | "windows" | "linux"; onChange: (v: string) => void }) {
   const [recording, setRecording] = useState(false);
   const onKeyDown = (e: KeyboardEvent) => {
     e.preventDefault();
@@ -75,7 +96,7 @@ function ShortcutInput({ value, onChange }: { value: string; onChange: (v: strin
   };
   return (
     <Button variant="outline" size="sm" className="min-w-24 font-mono" onClick={() => setRecording(true)} onKeyDown={recording ? onKeyDown : undefined} onBlur={() => setRecording(false)}>
-      {recording ? "Press keys…" : prettyShortcut(value)}
+      {recording ? "Press keys…" : prettyShortcut(value, os)}
     </Button>
   );
 }
@@ -157,21 +178,21 @@ export function PowerSection() {
   return (
     <>
       <Group title="Battery">
-        <Row title="Stop below" hint="Releases the wake lock and lets your Mac sleep when the battery gets this low.">
+        <Row title="Stop below" hint="Releases the wake lock and lets it sleep when the battery gets this low.">
           <div className="flex w-56 items-center gap-3">
             <Slider min={5} max={50} step={5} value={[cutoff]} onValueChange={([v]) => setCutoff(v)} onValueCommit={([batteryCutoff]) => update({ batteryCutoff })} aria-label="Battery cut-off" />
             <span className="w-10 text-right text-sm tabular-nums">{cutoff}%</span>
           </div>
         </Row>
-        <Row title="Only when plugged in" hint="Never hold the Mac awake on battery.">
+        <Row title="Only when plugged in" hint="Never keep it awake on battery.">
           <Switch checked={settings.onlyPluggedIn} onCheckedChange={(onlyPluggedIn) => update({ onlyPluggedIn })} aria-label="Only when plugged in" />
         </Row>
-        <Row title="Respect Low Power Mode" hint={status?.lowPower ? "Low Power Mode is on right now." : "Stand down while Low Power Mode is on."}>
+        <Row title={`Respect ${lowPowerName(status?.platform.os)}`} hint={status?.lowPower ? `${lowPowerName(status.platform.os)} is on right now.` : `Stand down while ${lowPowerName(status?.platform.os)} is on.`}>
           <Switch checked={settings.respectLowPower} onCheckedChange={(respectLowPower) => update({ respectLowPower })} aria-label="Respect Low Power Mode" />
         </Row>
       </Group>
 
-      <Group title="Heat" footer="Always on. A closed MacBook in a bag can't shed heat, so the app steps back when macOS reports thermal pressure and re-engages once it cools.">
+      {status?.platform.thermal !== false && <Group title="Heat" footer="Always on. A closed MacBook in a bag can't shed heat, so the app steps back when macOS reports thermal pressure and re-engages once it cools.">
         <Row title="Stop at thermal level">
           <Select value={String(settings.thermalLimit)} onValueChange={(v) => update({ thermalLimit: Number(v) })}>
             <SelectTrigger className="w-56" aria-label="Thermal limit">
@@ -183,24 +204,33 @@ export function PowerSection() {
             </SelectContent>
           </Select>
         </Row>
-      </Group>
+      </Group>}
     </>
   );
 }
+
+const lowPowerName = (os?: string) => (os === "windows" ? "Battery saver" : os === "linux" ? "Power saver" : "Low Power Mode");
 
 const DISPLAY_OPTIONS: { value: DisplayOff; label: string; hint: string }[] = [
   { value: "onLidClose", label: "When the lid closes", hint: "Blanks the screen the moment you shut the lid." },
   { value: "whileAgentsRun", label: "While agents run", hint: "Turns the display off as soon as an agent starts working." },
   { value: "afterFinish", label: "After agents finish", hint: "Turns it off a while after the last agent finishes, if you're away." },
-  { value: "never", label: "Never", hint: "Leave the display to macOS." },
+  { value: "never", label: "Never", hint: "Don't turn it off; the system's own display sleep still applies when agents are idle." },
 ];
 
 export function DisplaySection() {
-  const { settings, update } = useApp();
+  const { settings, status, update } = useApp();
   const [secs, setSecs] = useState(String(settings.displayOffAfterSecs));
   return (
     <>
-      <Group title="Turn the display off" footer="Display rules on lid close only apply without an external display. At a desk in clamshell mode, your monitor keeps working as normal.">
+      <Group
+        title="Turn the display off"
+        footer={
+          status?.platform.os === "linux"
+            ? "Display rules on lid close only apply without an external display. On Linux, turning the display off is best effort (X11, KDE and GNOME on Wayland)."
+            : "Display rules on lid close only apply without an external display. At a desk in clamshell mode, your monitor keeps working as normal."
+        }
+      >
         <RadioGroup value={settings.displayOff} onValueChange={(v) => update({ displayOff: v as DisplayOff })} className="gap-0 divide-y">
           {DISPLAY_OPTIONS.map((o) => (
             <Label key={o.value} htmlFor={`d-${o.value}`} className="flex cursor-pointer items-start gap-3 px-4 py-3 font-normal">
@@ -230,6 +260,23 @@ export function DisplaySection() {
       </Group>
 
       <Group>
+        <Row
+          title="Keep the screen on while agents work"
+          hint={
+            status?.platform.os === "linux"
+              ? "Not supported on Linux yet: your desktop's screen blanking still applies."
+              : settings.displayOff === "whileAgentsRun"
+                ? "Off while “Turn the display off while agents run” is selected."
+                : "Stops the display from dimming and sleeping. Closing the lid still turns it off."
+          }
+        >
+          <Switch
+            checked={settings.keepDisplayOn && settings.displayOff !== "whileAgentsRun"}
+            disabled={settings.displayOff === "whileAgentsRun" || status?.platform.os === "linux"}
+            onCheckedChange={(keepDisplayOn) => update({ keepDisplayOn })}
+            aria-label="Keep the screen on while agents work"
+          />
+        </Row>
         <Row title="Lock the screen when the lid closes" hint="Staying awake skips the usual lock-on-sleep, so the app locks for you.">
           <Switch checked={settings.lockOnLidClose} onCheckedChange={(lockOnLidClose) => update({ lockOnLidClose })} aria-label="Lock on lid close" />
         </Row>
@@ -245,7 +292,7 @@ export function NotificationsSection() {
   return (
     <>
       <Group title="Notify me" footer="Heat warnings are always shown.">
-        <Row title="When it starts keeping the Mac awake">
+        <Row title="When it starts keeping things awake">
           <Switch checked={settings.notifyEngage} onCheckedChange={(notifyEngage) => update({ notifyEngage })} aria-label="Notify on engage" />
         </Row>
         <Row title="When agents finish">
@@ -275,66 +322,6 @@ export function NotificationsSection() {
           </Button>
         </Row>
       </Group>
-    </>
-  );
-}
-
-export function LicenseSection() {
-  const { status, run } = useApp();
-  const [key, setKey] = useState("");
-  const [busy, setBusy] = useState(false);
-  const lic = status?.license;
-  if (!lic) return null;
-
-  if (!lic.configured) {
-    return (
-      <Group footer="Set POLAR_ORG_ID in src-tauri/src/license.rs to sell this build with Polar license keys (a 7-day trial, up to 3 Macs per key).">
-        <Row title="Licensing is off" hint="This build runs without a license." />
-      </Group>
-    );
-  }
-
-  const activate = async () => {
-    setBusy(true);
-    if (await run(api.activateLicense(key), "License activated. Thank you!")) setKey("");
-    setBusy(false);
-  };
-
-  return (
-    <>
-      <Group>
-        <Row
-          title={
-            <span className="flex items-center gap-2">
-              Status
-              {lic.state === "licensed" && <Badge>Licensed</Badge>}
-              {lic.state === "trial" && <Badge variant="secondary">Trial · {lic.trialDaysLeft} day{lic.trialDaysLeft === 1 ? "" : "s"} left</Badge>}
-              {lic.state === "expired" && <Badge variant="destructive">Trial ended</Badge>}
-            </span>
-          }
-          hint={lic.state === "licensed" ? "Lifetime license, up to 3 Macs. Keys are managed in your Polar account." : "One-time purchase, lifetime license for up to 3 Macs."}
-        >
-          {lic.state === "licensed" ? (
-            <Button variant="outline" size="sm" onClick={() => run(api.deactivateLicense(), "This Mac was removed from your license.")}>
-              Deactivate this Mac
-            </Button>
-          ) : (
-            <Button size="sm" onClick={() => api.openUrl(lic.buyUrl)}>
-              Buy a license
-            </Button>
-          )}
-        </Row>
-      </Group>
-      {lic.state !== "licensed" && (
-        <Group title="Enter license key">
-          <div className="flex gap-2 px-4 py-3">
-            <Input value={key} onChange={(e) => setKey(e.target.value)} placeholder="XXXX-XXXX-XXXX-XXXX" spellCheck={false} className="font-mono" onKeyDown={(e) => e.key === "Enter" && key && activate()} />
-            <Button disabled={!key || busy} onClick={activate}>
-              {busy ? "Activating…" : "Activate"}
-            </Button>
-          </div>
-        </Group>
-      )}
     </>
   );
 }
