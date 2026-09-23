@@ -6,7 +6,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/losefor/agents-dont-sleep.git"
+    "url": "https://github.com/itsmbaqer/agents-dont-sleep.git"
   },
   "type": "module",
   "packageManager": "pnpm@11.9.0",

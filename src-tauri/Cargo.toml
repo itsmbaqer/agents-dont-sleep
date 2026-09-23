@@ -5,7 +5,7 @@ description = "Keeps your laptop awake, lid shut, while coding agents work"
 authors = ["Mohammed Baqer"]
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/losefor/agents-dont-sleep"
+repository = "https://github.com/itsmbaqer/agents-dont-sleep"
 
 [workspace]
 members = ["hook"]
