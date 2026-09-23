@@ -698,7 +698,8 @@ mod tests {
         let mut v = json!({});
         json_install(&mut v, "cursor", Shape::Cursor, &[("stop", "idle")]).unwrap();
         assert_eq!(v["version"], 1);
-        assert!(v["hooks"]["stop"][0]["command"].as_str().unwrap().ends_with("adshook cursor idle"));
+        let cmd = v["hooks"]["stop"][0]["command"].as_str().unwrap();
+        assert!(ours(cmd) && cmd.ends_with(" cursor idle"), "{cmd}"); // adshook(.exe) cursor idle
         json_uninstall(&mut v);
         assert_eq!(v, json!({ "version": 1 }));
     }
