@@ -1,0 +1,10 @@
+# Agents Don't Sleep: forwards Hermes gateway activity to the menu-bar app. Safe to delete;
+# reinstall from Settings → Agents. CLI/TUI sessions use the shell hooks in config.yaml.
+name: agents-dont-sleep
+description: Keep the Mac awake while Hermes is working
+events:
+  - agent:start
+  - agent:step
+  - agent:end
+  - session:end
+  - session:reset
