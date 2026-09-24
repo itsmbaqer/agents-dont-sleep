@@ -4,6 +4,7 @@
 use crate::agents::Session;
 use crate::decide::Reason;
 use crate::settings::{Settings, TrayLabel, FOREVER};
+use crate::usage::{Limit, Window};
 use crate::{power, Status};
 use std::collections::HashMap;
 use tauri::{
@@ -301,6 +302,64 @@ fn battery_line(s: &Status, set: &Settings) -> String {
     }
 }
 
+/// "3d 04h" for a weekly reset; `dur` below a day.
+fn until(secs: u64) -> String {
+    if secs < 86_400 {
+        dur(secs)
+    } else {
+        format!("{}d {:02}h", secs / 86_400, secs / 3600 % 24)
+    }
+}
+
+fn left(w: &Window) -> f64 {
+    (100.0 - w.used_pct).clamp(0.0, 100.0)
+}
+
+/// Per provider: a separator, a "● Claude usage" row, then one row per window, e.g.
+/// "5h · 58% left · resets 2h 10m", or "— (sign in again)" on failure. Fixed ids per slot
+/// so text patches in place.
+pub fn usage_nodes(usage: &[Limit], now: u64) -> Vec<Node> {
+    let mut v = vec![];
+    for l in usage {
+        v.push(Node::Sep);
+        // A text glyph like session rows (an icon item would sit in its own, wider column);
+        // ⚠ when failing or under 20% left in the tightest window.
+        let low = [&l.five_h, &l.week].into_iter().flatten().any(|w| w.resets_at > now && left(w) < 20.0);
+        let glyph = if l.err.is_some() || low { "⚠" } else { "●" };
+        v.push(info(format!("h-usage:{}", l.name), format!("{glyph} {} usage", l.name)));
+        for (slot, label, w) in [("5h", "5h", &l.five_h), ("wk", "Week", &l.week)] {
+            let text = match w {
+                Some(w) if w.resets_at > now => {
+                    format!("{label} · {:.0}% left · resets {}", left(w), until(w.resets_at - now))
+                }
+                // Reset since the last reading: the window is full again.
+                Some(_) => format!("{label} · 100% left"),
+                None if l.err.is_none() => format!("{label} · 100% left"),
+                None => continue,
+            };
+            v.push(info(format!("u:{}:{slot}", l.name), text));
+        }
+        if let Some(e) = &l.err {
+            v.push(info(format!("u:{}:err", l.name), format!("— ({e})")));
+        }
+    }
+    v
+}
+
+/// "C 58% · X 90%": 5-hour window left per provider, "—" when unknown.
+pub fn usage_title(usage: &[Limit], now: u64) -> String {
+    let pct = |w: &Window| if w.resets_at > now { left(w) } else { 100.0 };
+    usage
+        .iter()
+        .map(|l| match &l.five_h {
+            Some(w) => format!("{} {:.0}%", l.short, pct(w)),
+            None if l.err.is_none() => format!("{} 100%", l.short),
+            None => format!("{} —", l.short),
+        })
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
 /// The whole menu, from current state. Pure, so layout rules are tested.
 pub fn spec(s: &Status, set: &Settings, connected: bool) -> Vec<Node> {
     let mut v = vec![
@@ -337,6 +396,7 @@ pub fn spec(s: &Status, set: &Settings, connected: bool) -> Vec<Node> {
     if sessions.is_empty() && s.process_agents.is_empty() {
         v.push(if connected { info("none", "No agents running") } else { item("connect", "Connect your agents…") });
     }
+    v.extend(usage_nodes(&s.usage, crate::settings::now()));
     v.push(Node::Sep);
     v.push(Node::Check {
         id: "toggle".into(),
@@ -546,7 +606,11 @@ pub fn update(app: &AppHandle, st: &mut TrayState, s: &Status, set: &Settings, c
         let _ = tray.set_icon_with_as_template(Some(icon(look)), TEMPLATE_ICONS);
         st.look = Some(look);
     }
-    let title = title(&s.sessions, &s.process_agents, set.tray_label);
+    let mut title = title(&s.sessions, &s.process_agents, set.tray_label);
+    let usage = usage_title(&s.usage, crate::settings::now());
+    if set.tray_label != TrayLabel::Off && !usage.is_empty() {
+        title = if title.is_empty() { usage } else { format!("{title} · {usage}") };
+    }
     let mut tooltip = status_line(s, set);
     // Windows can't show text beside a tray icon, so the counts go in the tooltip there.
     if cfg!(windows) && !title.is_empty() {
@@ -637,6 +701,7 @@ mod tests {
             today_agent_secs: 0,
             today_held_secs: 0,
             platform: power::platform(),
+            usage: vec![],
         }
     }
 
@@ -784,5 +849,43 @@ mod tests {
         } else {
             assert_eq!(term_app("vscode"), None);
         }
+    }
+
+    #[test]
+    fn usage_text() {
+        use crate::usage::{Limit, Window};
+        let w = |used_pct, resets_at| Some(Window { used_pct, resets_at });
+        let u = vec![
+            Limit {
+                name: "Claude",
+                short: "C",
+                five_h: w(42.0, 1000 + 7800),
+                week: w(19.4, 1000 + 3 * 86_400),
+                err: None,
+            },
+            Limit { name: "Codex", short: "X", five_h: None, week: None, err: Some("sign in again".into()) },
+        ];
+        let rows: Vec<String> = usage_nodes(&u, 1000)
+            .into_iter()
+            .map(|n| match n {
+                Node::Item { text, .. } => text,
+                _ => "-".into(),
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                "-",
+                "● Claude usage",
+                "5h · 58% left · resets 2h 10m",
+                "Week · 81% left · resets 3d 00h",
+                "-",
+                "⚠ Codex usage",
+                "— (sign in again)"
+            ]
+        );
+        assert_eq!(usage_title(&u, 1000), "C 58% · X —");
+        // A window that reset since the last reading is full again.
+        assert_eq!(usage_title(&u[..1], 9999), "C 100%");
     }
 }

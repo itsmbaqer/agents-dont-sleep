@@ -5,6 +5,7 @@ mod power;
 mod settings;
 mod stats;
 mod tray;
+mod usage;
 
 use decide::{decide, Inputs, Reason};
 use serde::Serialize;
@@ -55,6 +56,8 @@ pub(crate) struct Status {
     pub(crate) today_agent_secs: u64,
     pub(crate) today_held_secs: u64,
     pub(crate) platform: power::Platform,
+    /// 5-hour and weekly limits per signed-in provider.
+    pub(crate) usage: Vec<usage::Limit>,
 }
 
 struct Core {
@@ -75,6 +78,7 @@ struct Core {
     /// "Sleep when agents finish": one-shot, deliberately not saved.
     sleep_when_done: bool,
     stats: stats::Tracker,
+    usage: Vec<usage::Limit>,
 }
 
 struct AppState {
@@ -271,6 +275,7 @@ fn tick(app: &AppHandle, sys: &mut System) {
             today_agent_secs: 0,
             today_held_secs: 0,
             platform: power::platform(),
+            usage: c.usage.clone(),
         };
         let mut status = status;
         c.stats.tick(t, &stats::today(), &status.sessions, &status.process_agents, status.held, battery, on_ac);
@@ -597,6 +602,7 @@ pub fn run() {
                     alerts: alerts::Memory::default(),
                     sleep_when_done: false,
                     stats: stats::Tracker::load(now()),
+                    usage: vec![],
                 }),
                 tray: Mutex::new(tray::TrayState::default()),
                 kick: Mutex::new(kick_tx),
@@ -619,6 +625,19 @@ pub fn run() {
             if first_launch {
                 open_settings(&handle); // onboarding: grant permission, connect agents
             }
+
+            let usage_handle = handle.clone();
+            std::thread::spawn(move || {
+                // ponytail: fixed 5-minute poll; poll faster while agents work if it feels stale.
+                let mut poller = usage::Poller::default();
+                loop {
+                    let u = poller.poll();
+                    let st = usage_handle.state::<AppState>();
+                    st.core().usage = u;
+                    st.kick();
+                    std::thread::sleep(Duration::from_secs(5 * 60));
+                }
+            });
 
             std::thread::spawn(move || {
                 let mut sys = System::new();
