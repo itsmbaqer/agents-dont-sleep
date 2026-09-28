@@ -72,6 +72,7 @@ The icon tells you the state without opening anything.
 | **Keep awake** | 30 min, 1 h, 2 h, or until you stop it. No agent needed. |
 | **Pause** | Take a break without changing any settings. |
 | **Sleep when agents finish** | A one-time "put it to sleep when the work is done". It only sleeps if you're away from the keyboard. On Windows, normal idle sleep takes over instead. |
+| **Data Saver** (macOS) | For hotspots. Blocks everything except the agents' hosts, so macOS updates, the App Store and app updaters can't eat your data while the lid is closed. See [Data Saver](#data-saver-macos). |
 | **Today** | Agent time and time kept awake so far. Click it for the Activity tab. |
 
 The menu updates live while it's open, so you can watch a turn tick along.
@@ -90,6 +91,7 @@ The menu updates live while it's open, so you can watch a turn tick along.
 | **Menu bar label** | Per agent, a single count, or icon only, for a quiet menu bar. |
 | **Launch at login** | So it's there when you need it. It also restores anything a crash or reboot left behind. |
 | **Lid-closed permission** (macOS) | macOS always sleeps when you close the lid. This one-time admin grant allows exactly one command, the switch that stops that, and only while agents work. |
+| **Data Saver** (macOS) | Its own one-time grant, plus the same switch as the menu. Revoke removes the helper and the rule. |
 | **Remove all integrations** | The step before you uninstall. It leaves every agent's config exactly as it was. |
 
 </details>
@@ -213,12 +215,23 @@ Only Claude Code has been tested end to end so far. The others follow each agent
 
 If the app crashes, a small watchdog process puts every setting back. [SECURITY.md](SECURITY.md) lists every change the app makes, and how to undo each one by hand. On Wayland, the global shortcut and turning the display off are best effort.
 
+## Data Saver (macOS)
+
+A closed laptop on a hotspot can quietly download 15 GB of macOS and app updates. Turn on **Data Saver · agents only** in the menu. While it's on, only DNS, your local network and the hosts in `~/.agents-dont-sleep/datasaver-hosts.txt` are reachable. The defaults are Claude Code, Codex, GitHub, npm and PyPI. macOS and App Store automatic updates are also switched off, and put back afterwards. The first time, macOS asks for your password once.
+
+- **It allows by destination, not by app.** macOS has no per-app firewall without a signed Network Extension. Any app that talks to an allowed host also gets through, so keep the list short. The `*.githubusercontent.com` hosts are off by default because many apps download their updates from GitHub releases there.
+- **Add what your agent needs.** Claude Code's WebFetch, MCP servers with their own endpoints, and VPN gateways are blocked until you add them. Use **Edit allowed hosts…** in the menu. Changes apply within 5 minutes, or right away if you toggle Data Saver off and on.
+- **Connections that are already open get cut** when it turns on. Update downloads stop at once, and an agent's in-flight request is retried.
+- **It turns off when you quit** or the app crashes. It comes back on at the next launch if you left it on.
+- It uses pf, the built-in packet filter, through an anchor of its own. [SECURITY.md](SECURITY.md) lists every change.
+- **Tip:** also turn on **Low Data Mode** for each hotspot in System Settings → Wi-Fi → Details. macOS remembers it per network.
+
 ## Privacy
 
 - **What's kept:** tool **names** (`Bash`, `Edit`), the model name, the project folder, the terminal app, timings and counts.
 - **What isn't:** prompts, commands, file contents and tool output.
 - **Where:** everything stays in `~/.agents-dont-sleep/`. Daily stats are kept for 30 days.
-- **Network:** the app makes no network requests and has no telemetry.
+- **Network:** no telemetry. The only requests are the usage-limit reads, every 5 minutes, to Anthropic's and OpenAI's usage endpoints.
 
 ## FAQ
 
@@ -239,7 +252,7 @@ Code signing costs money and needs an Apple and Microsoft identity check. Until 
 
 ## Uninstall
 
-1. **Settings → General → Remove all.** On macOS, also click **Revoke**.
+1. **Settings → General → Remove all.** On macOS, also click **Revoke** for the lid-closed and Data Saver permissions.
 2. Quit from the tray and delete the app.
 3. Optional: delete `~/.agents-dont-sleep/`.
 

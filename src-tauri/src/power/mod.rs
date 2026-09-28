@@ -29,10 +29,11 @@ pub struct Platform {
     pub os: &'static str,
     pub needs_grant: bool,
     pub thermal: bool,
+    pub data_saver: bool,
 }
 
 pub fn platform() -> Platform {
-    Platform { os: OS, needs_grant: NEEDS_GRANT, thermal: thermal().is_some() }
+    Platform { os: OS, needs_grant: NEEDS_GRANT, thermal: thermal().is_some(), data_saver: crate::datasaver::SUPPORTED }
 }
 
 #[allow(dead_code)] // not every OS shells out

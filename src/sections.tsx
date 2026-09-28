@@ -16,6 +16,7 @@ export function GeneralSection() {
   const [confirmRemove, setConfirmRemove] = useState(false);
   const os = status?.platform.os;
   const lidProof = status?.lidProof ?? false;
+  const saverGranted = status?.saverGranted ?? false;
   return (
     <>
       <Group>
@@ -78,8 +79,37 @@ export function GeneralSection() {
         </Group>
       )}
 
+      {status?.platform.dataSaver && (
+        <Group
+          title="Data Saver"
+          footer="For hotspots. While on, only DNS, your local network and the hosts in ~/.agents-dont-sleep/datasaver-hosts.txt (Claude Code, Codex, GitHub, npm, PyPI) are reachable, and macOS and App Store automatic updates are off. It allows by destination, so other apps that talk to those hosts still get through. It turns off when you quit. The permission allows exactly switching it on and off."
+        >
+          <Row
+            title={
+              <span className="flex items-center gap-2">
+                Permission {saverGranted ? <Badge>Granted</Badge> : <Badge variant="outline">Not granted</Badge>}
+              </span>
+            }
+            hint={saverGranted ? "Switch it from the menu bar or here." : "Asks for your password once."}
+          >
+            {saverGranted ? (
+              <Button variant="outline" size="sm" onClick={() => run(api.uninstallSaverGrant(), "Data Saver permission removed.")}>
+                Revoke
+              </Button>
+            ) : (
+              <Button size="sm" onClick={() => run(api.installSaverGrant(), "Data Saver is ready.")}>
+                Grant…
+              </Button>
+            )}
+          </Row>
+          <Row title="Block everything except agents" hint="Background downloads such as macOS updates, App Store and app updaters fail right away.">
+            <Switch checked={settings.dataSaver} disabled={!saverGranted} onCheckedChange={(dataSaver) => update({ dataSaver })} aria-label="Data Saver" />
+          </Row>
+        </Group>
+      )}
+
       <Group title="Uninstall" footer="Run this before deleting the app: it disconnects every agent so their configs are left exactly as they were.">
-        <Row title="Remove all integrations" hint={os === "macos" ? "Then revoke the lid-closed permission above." : undefined}>
+        <Row title="Remove all integrations" hint={os === "macos" ? "Then revoke the lid-closed and Data Saver permissions above." : undefined}>
           <Button
             variant={confirmRemove ? "destructive" : "outline"}
             size="sm"

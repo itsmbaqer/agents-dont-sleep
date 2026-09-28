@@ -436,6 +436,22 @@ pub fn spec(s: &Status, set: &Settings, connected: bool) -> Vec<Node> {
     if power::NEEDS_GRANT && !s.lid_proof {
         v.push(item("grant", "Allow lid-closed awake…"));
     }
+    if crate::datasaver::SUPPORTED {
+        // Until granted it's a plain "…" item: a cancelled password prompt can't leave a stale check.
+        if s.saver_granted {
+            v.push(Node::Check {
+                id: "datasaver".into(),
+                text: "Data Saver · agents only".into(),
+                checked: set.data_saver,
+                accel: None,
+            });
+            if set.data_saver {
+                v.push(item("saverhosts", "Edit allowed hosts…"));
+            }
+        } else {
+            v.push(item("datasaver", "Data Saver · agents only…"));
+        }
+    }
     v.push(Node::Sep);
     if s.today_agent_secs > 0 || s.today_held_secs > 0 {
         v.push(Node::Item {
@@ -702,6 +718,7 @@ mod tests {
             today_held_secs: 0,
             platform: power::platform(),
             usage: vec![],
+            saver_granted: false,
         }
     }
 
@@ -737,6 +754,24 @@ mod tests {
                 "s:gemini__gemini-idle"
             ]
         );
+    }
+
+    #[test]
+    fn data_saver_items() {
+        if !crate::datasaver::SUPPORTED {
+            return;
+        }
+        let mut st = status(vec![]);
+        let mut set = Settings::default();
+        let has = |st: &Status, set: &Settings, id: &str| ids(&spec(st, set, true)).iter().any(|i| i == id);
+        let check = |st: &Status, set: &Settings| {
+            spec(st, set, true).iter().any(|n| matches!(n, Node::Check { id, .. } if id == "datasaver"))
+        };
+        assert!(has(&st, &set, "datasaver") && !check(&st, &set), "not granted: a plain item that asks");
+        st.saver_granted = true;
+        assert!(check(&st, &set) && !has(&st, &set, "saverhosts"));
+        set.data_saver = true;
+        assert!(has(&st, &set, "saverhosts"));
     }
 
     #[test]

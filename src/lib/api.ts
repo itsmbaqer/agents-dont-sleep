@@ -34,6 +34,8 @@ export interface Settings {
   releaseQuietAfterMins: number;
   /** "Keep awake" end (unix secs; 0 = off; 9999999999 = until turned off). */
   manualUntil: number;
+  /** Data Saver (macOS): block everything but agent hosts. */
+  dataSaver: boolean;
 }
 
 export type Reason =
@@ -78,6 +80,8 @@ export interface Platform {
   needsGrant: boolean;
   /** Whether this OS reports thermal pressure (not on Windows). */
   thermal: boolean;
+  /** Data Saver is available (macOS). */
+  dataSaver: boolean;
 }
 
 export interface Status {
@@ -85,6 +89,8 @@ export interface Status {
   held: boolean;
   heldSecs: number;
   lidProof: boolean;
+  /** Data Saver's one-time permission is installed. */
+  saverGranted: boolean;
   battery: number | null;
   onAc: boolean;
   thermal: number | null;
@@ -146,6 +152,8 @@ export const api = {
   removeAllIntegrations: () => invoke<void>("remove_all_integrations"),
   installGrant: () => invoke<void>("install_grant"),
   uninstallGrant: () => invoke<void>("uninstall_grant"),
+  installSaverGrant: () => invoke<void>("install_saver_grant"),
+  uninstallSaverGrant: () => invoke<void>("uninstall_saver_grant"),
   sounds: () => invoke<string[]>("sounds"),
   statsDays: (n: number) => invoke<Day[]>("stats_days", { n }),
   previewSound: (name: string) => invoke<void>("preview_sound", { name }),

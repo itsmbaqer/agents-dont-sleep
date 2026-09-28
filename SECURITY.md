@@ -6,7 +6,7 @@ Please report security issues privately through **GitHub → Security → Report
 
 ## What the app changes on your system
 
-Agents Don't Sleep only changes what it needs to keep a laptop awake with the lid closed, and it changes things back when agents finish, when you quit, and after a crash. A separate watchdog process restores the settings if the app is killed. The app itself also restores them the next time it starts.
+Agents Don't Sleep only changes what it needs to keep a laptop awake with the lid closed, plus the opt-in Data Saver on macOS. It changes things back when agents finish (or you switch Data Saver off), when you quit, and after a crash. A separate watchdog process restores the settings if the app is killed. The app itself also restores them the next time it starts.
 
 ### macOS
 
@@ -15,6 +15,9 @@ Agents Don't Sleep only changes what it needs to keep a laptop awake with the li
 | `/etc/sudoers.d/agents-dont-sleep`, which lets your user run exactly `/usr/bin/pmset -a disablesleep 0` and `… 1` without a password. It's validated with `visudo` and owned by root with mode 0440. | Once, when you click **Grant…** (admin password prompt) | `sudo rm /etc/sudoers.d/agents-dont-sleep`, or **Settings → General → Revoke** |
 | Kernel `SleepDisabled` flag on | Only while an agent is working | `sudo pmset -a disablesleep 0` |
 | A `caffeinate -i` assertion | Only while an agent is working | Quit the app |
+| **Data Saver:** `/Library/PrivilegedHelperTools/agents-dont-sleep-datasaver`, a root-owned 0755 shell script (source: `src-tauri/src/datasaver.sh`), and `/etc/sudoers.d/agents-dont-sleep-datasaver`, which lets your user run exactly `<helper> on` and `<helper> off` without a password. The allowed hosts are passed on stdin and filtered to host names, IPs and CIDRs. The helper never reads a file as root. | Once, the first time you turn on Data Saver (admin password prompt) | **Settings → General → Data Saver → Revoke**, or `sudo /Library/PrivilegedHelperTools/agents-dont-sleep-datasaver off; sudo rm /Library/PrivilegedHelperTools/agents-dont-sleep-datasaver* /etc/sudoers.d/agents-dont-sleep-datasaver` |
+| **Data Saver:** a pf anchor `com.apple/250.agents-dont-sleep` that blocks outgoing connections except DNS, DHCP, NTP, mDNS, the local network and the hosts in `~/.agents-dont-sleep/datasaver-hosts.txt`. pf is enabled with a reference token, which is released when Data Saver turns off. `/etc/pf.conf` is never edited. | Only while Data Saver is on | `sudo pfctl -a com.apple/250.agents-dont-sleep -F rules` |
+| **Data Saver:** `AutomaticDownload` and `AutomaticallyInstallMacOSUpdates` in `/Library/Preferences/com.apple.SoftwareUpdate`, and `AutoUpdate` in `/Library/Preferences/com.apple.commerce`, set to false. The original values are saved to `…-datasaver.state` next to the helper and put back afterwards. Security data updates (XProtect) are left alone. | Only while Data Saver is on | System Settings → General → Software Update → Automatic Updates |
 
 ### Windows
 
@@ -59,4 +62,4 @@ No root is used.
   - the error **kind** when a turn fails (e.g. `rate_limit`)
 - Prompts, commands, file paths inside tool input, file contents and tool output are never kept. Names are only accepted as short identifiers, never free text.
 - Everything it records stays in `~/.agents-dont-sleep/`: live session records in `sessions/`, and daily totals (agent time, time kept awake, counts, per-session summaries with project folder names) in `stats/`, which keeps 30 days. Delete the folder to erase it.
-- The app makes no network requests and has no telemetry.
+- The app has no telemetry. Its only network requests are the usage-limit reads: every 5 minutes it asks Anthropic's and OpenAI's usage endpoints, using the login each tool already stores.

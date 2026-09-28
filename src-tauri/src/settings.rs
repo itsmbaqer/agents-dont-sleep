@@ -79,6 +79,8 @@ pub struct Settings {
     pub release_quiet_after_mins: u32,
     /// "Keep awake" from the tray: unix time it ends (0 = off, FOREVER = until turned off).
     pub manual_until: u64,
+    /// Data Saver (macOS): block everything but agent hosts. Needs its own one-time grant.
+    pub data_saver: bool,
 }
 
 impl Default for Settings {
@@ -112,6 +114,7 @@ impl Default for Settings {
             alert_errors: true,
             release_quiet_after_mins: 120,
             manual_until: 0,
+            data_saver: false,
         }
     }
 }

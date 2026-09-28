@@ -26,6 +26,7 @@ CI runs `cargo fmt --check`, `cargo clippy -- -D warnings` and the tests on macO
 | `src-tauri/src/stats.rs` | Daily activity files for the Activity tab |
 | `src-tauri/src/agents.rs` | Agent integrations and session scanning |
 | `src-tauri/src/power/` | One API, one file per OS |
+| `src-tauri/src/datasaver.rs`, `datasaver.sh` | Data Saver (macOS): the pf allowlist and its root-owned helper |
 | `src-tauri/hook/` | `adshook`, the helper every agent hook calls |
 | `src/` | The React settings window |
 
