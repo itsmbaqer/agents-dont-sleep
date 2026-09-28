@@ -1,5 +1,6 @@
 mod agents;
 mod alerts;
+mod datasaver;
 mod decide;
 mod power;
 mod settings;
@@ -58,6 +59,8 @@ pub(crate) struct Status {
     pub(crate) platform: power::Platform,
     /// 5-hour and weekly limits per signed-in provider.
     pub(crate) usage: Vec<usage::Limit>,
+    /// Data Saver's one-time permission is installed (macOS).
+    pub(crate) saver_granted: bool,
 }
 
 struct Core {
@@ -79,6 +82,7 @@ struct Core {
     sleep_when_done: bool,
     stats: stats::Tracker,
     usage: Vec<usage::Limit>,
+    saver_granted: bool,
 }
 
 struct AppState {
@@ -86,6 +90,8 @@ struct AppState {
     /// Separate from `core`: menu calls hop to the main thread, which may want `core`.
     tray: Mutex<tray::TrayState>,
     kick: Mutex<mpsc::Sender<()>>,
+    /// Wakes the Data Saver thread, the only place that switches it on or off.
+    saver: Mutex<mpsc::Sender<()>>,
 }
 
 impl AppState {
@@ -95,6 +101,9 @@ impl AppState {
     /// Re-run the loop now instead of waiting for the next tick.
     fn kick(&self) {
         let _ = self.kick.lock().map(|k| k.send(()));
+    }
+    fn saver_kick(&self) {
+        let _ = self.saver.lock().map(|k| k.send(()));
     }
 }
 
@@ -108,6 +117,7 @@ fn release(c: &mut Core) {
 /// Body of `<exe> --watchdog <pid>` (see `main.rs`).
 pub fn watchdog(pid: u32) {
     power::run_watchdog(pid);
+    datasaver::restore(); // a dead app must never leave the firewall up
 }
 
 /// One pass: gather inputs (no lock held — some of these hop to the main thread), decide,
@@ -259,6 +269,7 @@ fn tick(app: &AppHandle, sys: &mut System) {
             held: c.held_since.is_some(),
             held_secs: c.held_since.map_or(0, |t| t.elapsed().as_secs()),
             lid_proof: c.granted,
+            saver_granted: c.saver_granted,
             battery,
             on_ac,
             thermal,
@@ -370,6 +381,44 @@ fn grant_permission(app: &AppHandle) -> Result<(), String> {
     res
 }
 
+fn grant_data_saver(app: &AppHandle) -> Result<(), String> {
+    let res = datasaver::install_grant();
+    let st = app.state::<AppState>();
+    st.core().saver_granted = datasaver::has_grant();
+    st.kick();
+    res
+}
+
+/// Tray: flips Data Saver. The first time it asks for the one-time permission, then turns on.
+fn toggle_data_saver(app: &AppHandle) {
+    let st = app.state::<AppState>();
+    let granted = st.core().saver_granted;
+    if !granted && grant_data_saver(app).is_err() {
+        return;
+    }
+    update_settings(app, |s| s.data_saver = !granted || !s.data_saver);
+    st.saver_kick();
+}
+
+/// The Data Saver thread: applies the setting on every wake-up, and re-applies it every 5
+/// minutes while on so edits to the host list and rotating CDN addresses get picked up.
+fn data_saver_loop(app: &AppHandle, wake: mpsc::Receiver<()>) {
+    let mut applied = false;
+    loop {
+        let want = app.state::<AppState>().core().settings.data_saver;
+        if want || applied {
+            let res = datasaver::apply(want);
+            applied = want && res.is_ok();
+            if let (true, Err(e)) = (want, res) {
+                let _ = datasaver::apply(false); // don't leave half of it on
+                update_settings(app, |s| s.data_saver = false);
+                let _ = app.notification().builder().title("Data Saver couldn't start").body(e).show();
+            }
+        }
+        let _ = wake.recv_timeout(Duration::from_secs(5 * 60));
+    }
+}
+
 fn on_menu(app: &AppHandle, id: &str) {
     match id {
         "toggle" => update_settings(app, |s| s.enabled = !s.enabled),
@@ -396,6 +445,11 @@ fn on_menu(app: &AppHandle, id: &str) {
             let app = app.clone();
             std::thread::spawn(move || grant_permission(&app));
         }
+        "datasaver" => {
+            let app = app.clone();
+            std::thread::spawn(move || toggle_data_saver(&app));
+        }
+        "saverhosts" => datasaver::edit_hosts(),
         "settings" | "status" => open_settings(app),
         "connect" => open_settings_at(app, "agents"),
         "today" => open_settings_at(app, "activity"),
@@ -461,6 +515,7 @@ fn save_settings(app: AppHandle, st: State<AppState>, mut settings: Settings) ->
     settings.first_run = old.first_run; // owned by Rust, never by the form
     settings.battery_cutoff = settings.battery_cutoff.clamp(5, 50);
     settings.thermal_limit = settings.thermal_limit.clamp(2, 3);
+    settings.data_saver &= st.core().saver_granted;
     if settings.shortcut != old.shortcut {
         if let Err(e) = register_shortcut(&app, &settings.shortcut) {
             let _ = register_shortcut(&app, &old.shortcut);
@@ -470,7 +525,11 @@ fn save_settings(app: AppHandle, st: State<AppState>, mut settings: Settings) ->
     if settings.launch_at_login != old.launch_at_login {
         sync_autostart(&app, settings.launch_at_login);
     }
+    let saver_changed = settings.data_saver != old.data_saver;
     update_settings(&app, |s| *s = settings);
+    if saver_changed {
+        st.saver_kick();
+    }
     Ok(())
 }
 
@@ -524,6 +583,21 @@ async fn uninstall_grant(app: AppHandle) -> Result<(), String> {
     res
 }
 
+#[tauri::command]
+async fn install_saver_grant(app: AppHandle) -> Result<(), String> {
+    grant_data_saver(&app)
+}
+
+#[tauri::command]
+async fn uninstall_saver_grant(app: AppHandle) -> Result<(), String> {
+    update_settings(&app, |s| s.data_saver = false);
+    let res = datasaver::uninstall_grant(); // switches it off as root, then removes it
+    let st = app.state::<AppState>();
+    st.core().saver_granted = datasaver::has_grant();
+    st.kick();
+    res
+}
+
 /// The last `n` days of activity (oldest first), today from memory so it's current.
 #[tauri::command]
 fn stats_days(st: State<AppState>, n: i64) -> Vec<stats::Day> {
@@ -547,6 +621,7 @@ fn preview_sound(name: String) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let (kick_tx, kick_rx) = mpsc::channel::<()>();
+    let (saver_tx, saver_rx) = mpsc::channel::<()>();
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
@@ -561,6 +636,8 @@ pub fn run() {
             remove_all_integrations,
             install_grant,
             uninstall_grant,
+            install_saver_grant,
+            uninstall_saver_grant,
             sounds,
             preview_sound,
             stats_days
@@ -570,6 +647,7 @@ pub fn run() {
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
             power::restore(); // clear anything a crash or reboot left behind
+            datasaver::restore();
             power::init();
             power::spawn_watchdog();
             power::disable_app_nap();
@@ -584,6 +662,9 @@ pub fn run() {
             if agents::refresh_integrations(s.hooks_version) {
                 s.hooks_version = agents::HOOKS_VERSION;
             }
+            let saver_granted = datasaver::has_grant();
+            // An update that changed the helper asks for the permission again before it runs.
+            s.data_saver &= saver_granted;
             let _ = settings::save(&s);
             let shortcut = s.shortcut.clone();
             let autostart = s.launch_at_login;
@@ -603,9 +684,11 @@ pub fn run() {
                     sleep_when_done: false,
                     stats: stats::Tracker::load(now()),
                     usage: vec![],
+                    saver_granted,
                 }),
                 tray: Mutex::new(tray::TrayState::default()),
                 kick: Mutex::new(kick_tx),
+                saver: Mutex::new(saver_tx),
             });
 
             let handle = app.handle().clone();
@@ -639,6 +722,9 @@ pub fn run() {
                 }
             });
 
+            let saver_handle = handle.clone();
+            std::thread::spawn(move || data_saver_loop(&saver_handle, saver_rx));
+
             std::thread::spawn(move || {
                 let mut sys = System::new();
                 loop {
@@ -659,6 +745,10 @@ pub fn run() {
             let mut c = st.core();
             release(&mut c);
             c.stats.flush(now());
+            // Quitting turns it off, like the keep-awake hold; the setting brings it back at launch.
+            if c.settings.data_saver {
+                let _ = datasaver::apply(false);
+            }
         }
         // Launching the app again while it runs (Finder, Spotlight) opens Settings.
         #[cfg(target_os = "macos")]

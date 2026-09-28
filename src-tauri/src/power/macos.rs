@@ -21,7 +21,7 @@ fn set_sleep_disabled(on: bool) -> bool {
     quiet("/usr/bin/sudo", &["-n", PMSET, "-a", "disablesleep", if on { "1" } else { "0" }])
 }
 
-fn admin_shell(script: &str, prompt: &str) -> Result<(), String> {
+pub(crate) fn admin_shell(script: &str, prompt: &str) -> Result<(), String> {
     let apple = format!(
         "do shell script \"{}\" with administrator privileges with prompt \"{}\"",
         script.replace('\\', "\\\\").replace('"', "\\\""),
@@ -35,13 +35,18 @@ fn admin_shell(script: &str, prompt: &str) -> Result<(), String> {
     }
 }
 
-/// One admin prompt: validate the rule with visudo, then install it root-owned 0440.
-pub fn install_grant() -> Result<(), String> {
+/// `$USER`, checked: the name ends up in sudoers and in a shell line, so refuse anything unusual.
+pub(crate) fn sudo_user() -> Result<String, String> {
     let user = std::env::var("USER").map_err(|e| e.to_string())?;
-    // The name ends up in sudoers and in a shell line; refuse anything unusual.
     if user.is_empty() || !user.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c)) {
         return Err(format!("unsupported user name {user:?}"));
     }
+    Ok(user)
+}
+
+/// One admin prompt: validate the rule with visudo, then install it root-owned 0440.
+pub fn install_grant() -> Result<(), String> {
+    let user = sudo_user()?;
     let tmp = data_dir().join("sudoers.tmp");
     let tmp_s = tmp.to_string_lossy().into_owned();
     if tmp_s.contains('\'') {
